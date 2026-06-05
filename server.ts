@@ -81,6 +81,12 @@ async function startTelegramPolling() {
       return;
     }
 
+    if (settings?.devPollingEnabled === false) {
+      console.log(`[Polling:${INSTANCE_ID}] 🔴 Initializing Polling is DISABLED in settings. Standby mode.`);
+      isPollingActive = false;
+      return;
+    }
+
     const executionId = Math.random().toString(36).substring(7);
     currentPollingExecutionId = executionId;
 
@@ -412,11 +418,34 @@ app.get("/api/telegram-status", async (req, res) => {
       botToken: botToken ? `${botToken.substring(0, 8)}...` : "",
       adminChatId,
       botUser: botInfo ? botInfo.result : null,
-      webhookInfo: hookData.ok ? hookData.result : { url: "", error: hookData.error }
+      webhookInfo: hookData.ok ? hookData.result : { url: "", error: hookData.error },
+      isPollingActive,
+      devPollingEnabled: settings.devPollingEnabled !== false
     });
   } catch (err: any) {
     console.error("API Status Error:", err);
     res.json({ configured: false, error: err.message });
+  }
+});
+
+// New polling toggle
+app.post("/api/polling/toggle", async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    const settings = await db.getSettings();
+    await db.saveSettings({ ...settings, devPollingEnabled: enabled });
+    
+    if (enabled) {
+      console.log(`[API] Enabling polling on request.`);
+      await startTelegramPolling();
+    } else {
+      console.log(`[API] Disabling polling on request.`);
+      await stopTelegramPolling();
+    }
+    
+    res.json({ success: true, enabled, isPollingActive });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

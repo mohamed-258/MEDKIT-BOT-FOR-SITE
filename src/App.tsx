@@ -580,6 +580,22 @@ export default function App() {
     }
   };
 
+  // Toggle Polling
+  const handleTogglePolling = async (enabled: boolean) => {
+    try {
+      const res = await fetch("/api/polling/toggle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled })
+      });
+      if (res.ok) {
+        fetchTelegramWebhookStatus();
+      }
+    } catch (err) {
+      console.error("Failed to toggle polling:", err);
+    }
+  };
+
   // Direct Ticket Reply (Approvals / Rejections)
   const submitTicketReply = async (status: "approved" | "rejected") => {
     if (!selectedTicket) return;
@@ -1982,6 +1998,33 @@ export default function App() {
                   {/* Webhook Connectivity Panel & Tutorial instructions */}
                   <div className="space-y-6">
                     
+                    {/* Local Preview Control */}
+                    <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
+                      <h3 className="text-sm font-bold text-white uppercase tracking-wider">التحكم في المعاينة (Local Preview) 🔍</h3>
+                      <div className="p-4 bg-slate-950 border border-white/5 rounded-xl space-y-3.5 text-right">
+                        <div className="flex items-center justify-between flex-row-reverse">
+                          <span className="text-slate-300 font-bold text-[11px]">حالة استجابة المعاينة:</span>
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${webhookStatus?.isPollingActive ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
+                            {webhookStatus?.isPollingActive ? "Active" : "Stopped"}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 leading-relaxed">
+                          استخدم هذا الزر لتعطيل استجابة المعاينة الحالية (التي تشاهدها الآن) لمنع تداخل الردود مع النسخة المنشورة.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePolling(webhookStatus?.devPollingEnabled === false)}
+                          className={`w-full py-2.5 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
+                            webhookStatus?.devPollingEnabled !== false 
+                              ? "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/15" 
+                              : "bg-cyan-500 text-slate-950 hover:bg-cyan-400"
+                          }`}
+                        >
+                          {webhookStatus?.devPollingEnabled !== false ? "إيقاف استجابة المعاينة ⛔" : "تشغيل استجابة المعاينة ▶️"}
+                        </button>
+                      </div>
+                    </div>
+
                     {/* Bot Setup status */}
                     <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
                       <h3 className="text-sm font-bold text-white uppercase tracking-wider">حالة تشغيل 24 ساعة ⚡</h3>

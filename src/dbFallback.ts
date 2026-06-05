@@ -10,6 +10,7 @@ interface Setting {
   welcomeMessage: string;
   seededMenus?: boolean;
   allowedEmails?: string[];
+  devPollingEnabled?: boolean;
 }
 
 interface Menu {

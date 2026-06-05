@@ -4,6 +4,7 @@ export interface Setting {
   welcomeMessage: string;
   seededMenus?: boolean;
   allowedEmails?: string[]; // list of emails authorized to access the dashboard
+  devPollingEnabled?: boolean; // toggle for local development polling
 }
 
 export interface SupportMessage {
