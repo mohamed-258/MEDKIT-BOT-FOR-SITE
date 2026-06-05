@@ -52,12 +52,11 @@ const INSTANCE_ID = Math.random().toString(36).substring(2, 10);
 function isProductionEnvironment(req?: express.Request): boolean {
   // 1. Check if we have a request context with a production-like host
   const host = req?.get("host") || "";
-  if (host.includes("ais-pre-") || host.includes("medkit-bot-dashboard")) {
+  if (host.includes("ais-pre-") || host.includes("medkit-bot-dashboard") || (host.includes("run.app") && !host.includes("ais-dev-"))) {
     return true;
   }
   
-  // 2. Check current process origin if available (not always possible in polling)
-  // 3. Check environment variables
+  // 2. Platform environment variables
   if (process.env.NODE_ENV === "production") return true;
 
   return false;
@@ -932,25 +931,36 @@ async function processTelegramUpdate(update: any) {
     }
 
     // 6. Text message inside awaiting_info gathering
-    if (session.step === "awaiting_info" && text) {
+    if (text) {
       // More relaxed email detection: contains @ and at least one dot after it
       const isLikelyEmail = text.includes("@") && text.split("@")[1]?.includes(".");
       
       if (isLikelyEmail) {
-        session.email = text;
-        await db.saveSession(session);
+        if (session.step === "awaiting_info") {
+            session.email = text;
+            await db.saveSession(session);
 
-        if (session.transactionImage) {
-          await completeTicket(text, session.transactionImage, session.selectedPlanId!);
+            if (session.transactionImage) {
+              await completeTicket(text, session.transactionImage, session.selectedPlanId!);
+            } else {
+              await callTelegram(botToken, "sendMessage", {
+                chat_id: chatId,
+                text: `✅ تم تسجيل البريد: \`${text}\`\n\nبانتظار إرسال *صورة الإيصال* لإتمام التفعيل. 📸`,
+                parse_mode: "Markdown"
+              });
+            }
+            return;
         } else {
-          await callTelegram(botToken, "sendMessage", {
-            chat_id: chatId,
-            text: `✅ تم تسجيل البريد: \`${text}\`\n\nبانتظار إرسال *صورة الإيصال* لإتمام التفعيل. 📸`,
-            parse_mode: "Markdown"
-          });
+            // Loose email in idle/support state - Help the user!
+            await callTelegram(botToken, "sendMessage", {
+                chat_id: chatId,
+                text: `✅ لقد أرسلت بريداً إلكترونياً (${text}).\n\nيرجى اختيار باقة الاشتراك التي ترغب في تفعيلها أولاً من القائمة بالأسفل، أو إرسال صورة الإيصال.`
+            });
+            return;
         }
-        return;
-      } else if (text !== "البداية 🏠" && !text.startsWith("/")) {
+      }
+      
+      if (session.step === "awaiting_info" && text !== "البداية 🏠" && !text.startsWith("/")) {
           // If they sent something that doesn't look like an email while we are waiting for info
           await callTelegram(botToken, "sendMessage", {
               chat_id: chatId,
@@ -1000,9 +1010,10 @@ async function processTelegramUpdate(update: any) {
 
     // Default response if nothing else matched
     if (text) {
+        const debugSuffix = process.env.NODE_ENV !== "production" ? `\n\n_(i:${INSTANCE_ID}_s:${session?.step || "none"})_` : "";
         await callTelegram(botToken, "sendMessage", {
             chat_id: chatId,
-            text: "💡 الرجاء استخدام أزرار التحكم بالأسفل لاختيار باقة تفعيل أو التواصل مع الدعم الفني."
+            text: `💡 الرجاء استخدام أزرار التحكم بالأسفل لاختيار باقة تفعيل أو التواصل مع الدعم الفني.${debugSuffix}`
         });
     }
   }

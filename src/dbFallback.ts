@@ -416,7 +416,7 @@ export class DatabaseController {
     if (!updateId) return true;
     const id = updateId.toString();
 
-    // Local DB cleanup (keep last 500 updates to avoid bloat)
+    // 1. Local Memory/JSON check first
     const db = readLocalDB();
     if (!(db as any).processedUpdates) (db as any).processedUpdates = {};
     const localMap = (db as any).processedUpdates;
@@ -426,30 +426,43 @@ export class DatabaseController {
       return false;
     }
 
+    // Mark as processed locally
     localMap[id] = true;
-    if (Object.keys(localMap).length > 1000) {
-      (db as any).processedUpdates = { [id]: true }; 
+    // Keep internal history clean (last 1000)
+    if (Object.keys(localMap).length > 2000) {
+      const keys = Object.keys(localMap).sort();
+      const newMap: Record<string, boolean> = {};
+      keys.slice(-1000).forEach(k => newMap[k] = true);
+      (db as any).processedUpdates = newMap;
     }
     writeLocalDB(db);
 
+    // 2. Global Sync (Firestore)
     if (!firestoreWorking) {
+      // If Firestore is down, we must rely solely on local state.
+      // In multiple-instance scenarios, this avoids duplication ONLY IF they share the same disk.
+      // Since they don't, we return TRUE but acknowledge the risk.
       console.log(`[${instanceId || "DB"}] Firestore not working, returning TRUE for update ${id} (Bypassed sync).`);
       return true;
     }
 
     try {
+      // Use doc().create() which fails if the document already exists (atomic claim)
       await this.fsDb.collection("processed_updates").doc(id).create({ 
         createdAt: new Date().toISOString(),
-        instanceId: instanceId || "unknown"
+        instanceId: instanceId || "unknown",
+        claimedAt: admin.firestore.FieldValue.serverTimestamp()
       });
       console.log(`[${instanceId || "DB"}] Successfully CLAIMED update ${id} in Firestore.`);
       return true;
     } catch (err: any) {
-      if (err.code === 6 || (err.message && err.message.includes("already exists"))) {
-        console.log(`[${instanceId || "DB"}] Update ${id} already claimed by another instance in Firestore.`);
+      // Error code 6 is "ALREADY_EXISTS"
+      if (err.code === 6 || (err.message && err.message.toLowerCase().includes("already exists"))) {
+        console.log(`[${instanceId || "DB"}] Update ${id} already claimed in Firestore by another instance.`);
         return false;
       }
       console.log(`[${instanceId || "DB"}] Firestore error claiming update ${id}:`, err.message);
+      // On unknown errors, we'd rather risk a duplicate than a lost message
       return true; 
     }
   }
