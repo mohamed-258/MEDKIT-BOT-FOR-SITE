@@ -297,29 +297,27 @@ initDatabase();
 
 // --- HELPERS ---
 function getPublicAppUrl(req: express.Request): string {
+  // 1. Priority: Environment variable
   if (process.env.APP_URL) {
     return process.env.APP_URL.replace(/\/$/, "");
   }
-
-  const proto = (req.headers["x-forwarded-proto"] as string) || "https";
-  const forwardedHost = req.headers["x-forwarded-host"] as string;
-  const hostHeader = req.headers["host"] as string;
-
-  // Prioritize public domains over localhost/local IPs
-  if (forwardedHost && !forwardedHost.includes("localhost") && !forwardedHost.includes("127.0.0.1")) {
-    return `${proto}://${forwardedHost}`;
-  }
-  if (hostHeader && !hostHeader.includes("localhost") && !hostHeader.includes("127.0.0.1")) {
-    return `${proto}://${hostHeader}`;
-  }
-
-  // Fallback to body origin
+  
+  // 2. Secondary: Explicitly passed appUrl from client
   if (req.body && req.body.appUrl) {
     return req.body.appUrl.replace(/\/$/, "");
   }
 
-  // Final fallback (production / current environment metadata domain)
-  return "https://ais-dev-4kvme67znt7t7krxejpyoe-51222879362.europe-west2.run.app";
+  // 3. Tertiary: Host header (reliable for most cloud environments)
+  const protocol = req.headers["x-forwarded-proto"] === "https" ? "https" : req.protocol;
+  const host = req.headers.host;
+  
+  if (host && !host.includes("localhost") && !host.includes("127.0.0.1")) {
+    return `${protocol}://${host}`;
+  }
+
+  // Final fallback to the current AI Studio production environment URL (static)
+  // Note: req.get('origin') or req.get('host') is better but we use this for when NO host is found
+  return "https://medkit-bot-dashboard-568935711335.europe-west2.run.app";
 }
 
 // --- API ROUTES ---
@@ -332,17 +330,17 @@ app.get("/api/telegram-status", async (req, res) => {
     const adminChatId = settings.adminChatId || "";
 
     if (!botToken) {
-      return res.json({ configured: false, detail: "Bot token is empty. Please configure it." });
+      return res.json({ configured: false, detail: "Bot token is empty. Please configure it in Settings." });
     }
 
     // Fail-safe: Automatically kickstart polling loop if inactive but token is provided
-    if (!isPollingActive) {
+    if (!isPollingActive && botToken) {
       console.log("Fail-safe: Kickstarting Telegram Long Polling from API status call...");
       startTelegramPolling().catch((e) => console.error("Error startTelegramPolling:", e));
     }
 
     // Call GetWebhookInfo
-    const hookData = await callTelegram(botToken, "getWebhookInfo", {});
+    const hookData = await callTelegram(botToken, "getWebhookInfo", {}).catch(err => ({ ok: false, error: err.message }));
     const botInfo = await callTelegram(botToken, "getMe", {}).catch(() => null);
 
     res.json({
@@ -350,9 +348,10 @@ app.get("/api/telegram-status", async (req, res) => {
       botToken: botToken ? `${botToken.substring(0, 8)}...` : "",
       adminChatId,
       botUser: botInfo ? botInfo.result : null,
-      webhookInfo: hookData.result
+      webhookInfo: hookData.ok ? hookData.result : { url: "", error: hookData.error }
     });
   } catch (err: any) {
+    console.error("API Status Error:", err);
     res.json({ configured: false, error: err.message });
   }
 });
@@ -491,6 +490,20 @@ app.delete("/api/menus/:id", async (req, res) => {
     await db.deleteMenu(id);
     res.json({ success: true });
   } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete Ticket
+app.delete("/api/tickets/:id", async (req, res) => {
+  try {
+    const id = req.params.id;
+    console.log(`[API] DELETE Request for Ticket ID: ${id}`);
+    await db.deleteTicket(id);
+    console.log(`[API] Successfully deleted Ticket ID: ${id}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error(`[API] Error deleting Ticket ID: ${req.params.id}:`, err.message);
     res.status(500).json({ error: err.message });
   }
 });

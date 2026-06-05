@@ -157,6 +157,11 @@ export class DatabaseController {
 
   // settings/global
   async getSettings(): Promise<Setting> {
+    if (!firestoreWorking) {
+      console.log("Database Fallback: Loading settings from LOCAL DB");
+      return readLocalDB().settings.global || DEFAULT_DB.settings.global;
+    }
+
     try {
       console.log("Firestore: Fetching settings/global...");
       const snap = await this.fsDb.collection("settings").doc("global").get();
@@ -166,11 +171,20 @@ export class DatabaseController {
       console.log("Firestore: settings/global document does not exist.");
     } catch (err: any) {
       console.error("Firestore getSettings failed. Error:", err.message);
+      // Extra safety fallback on error
+      return readLocalDB().settings.global || DEFAULT_DB.settings.global;
     }
     return DEFAULT_DB.settings.global;
   }
 
   async saveSettings(settings: Setting): Promise<void> {
+    // Save to local for fallback
+    const db = readLocalDB();
+    db.settings.global = settings;
+    writeLocalDB(db);
+
+    if (!firestoreWorking) return;
+
     try {
       await this.fsDb.collection("settings").doc("global").set(settings, { merge: true });
     } catch (err: any) {
@@ -181,6 +195,11 @@ export class DatabaseController {
 
   // menus
   async getMenus(): Promise<Menu[]> {
+    if (!firestoreWorking) {
+      console.log("Database Fallback: Loading menus from LOCAL DB");
+      return Object.values(readLocalDB().menus);
+    }
+
     try {
       console.log("Firestore: Fetching menus list...");
       const snap = await this.fsDb.collection("menus").get();
@@ -194,11 +213,17 @@ export class DatabaseController {
       return list;
     } catch (err: any) {
       console.error("Firestore getMenus failed. Error:", err.message);
-      throw err;
+      return Object.values(readLocalDB().menus);
     }
   }
 
   async saveMenu(menu: Menu): Promise<void> {
+    const db = readLocalDB();
+    db.menus[menu.id] = menu;
+    writeLocalDB(db);
+
+    if (!firestoreWorking) return;
+
     try {
       await this.fsDb.collection("menus").doc(menu.id).set(menu);
     } catch (err: any) {
@@ -208,6 +233,12 @@ export class DatabaseController {
   }
 
   async deleteMenu(id: string): Promise<void> {
+    const db = readLocalDB();
+    delete db.menus[id];
+    writeLocalDB(db);
+
+    if (!firestoreWorking) return;
+
     try {
       await this.fsDb.collection("menus").doc(id).delete();
     } catch (err: any) {
@@ -218,6 +249,13 @@ export class DatabaseController {
 
   // tickets
   async getTickets(): Promise<Ticket[]> {
+    if (!firestoreWorking) {
+      console.log("Database Fallback: Loading tickets from LOCAL DB");
+      return Object.values(readLocalDB().tickets).sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+    }
+
     try {
       const snap = await this.fsDb.collection("tickets").orderBy("createdAt", "desc").get();
       const list: Ticket[] = [];
@@ -227,11 +265,19 @@ export class DatabaseController {
       return list;
     } catch (err: any) {
       console.error("Firestore getTickets failed:", err.message);
-      throw err;
+      return Object.values(readLocalDB().tickets).sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
     }
   }
 
   async saveTicket(ticket: Ticket): Promise<void> {
+    const db = readLocalDB();
+    db.tickets[ticket.id] = ticket;
+    writeLocalDB(db);
+
+    if (!firestoreWorking) return;
+
     try {
       await this.fsDb.collection("tickets").doc(ticket.id).set(ticket);
     } catch (err: any) {
@@ -241,6 +287,10 @@ export class DatabaseController {
   }
 
   async getTicket(id: string): Promise<Ticket | null> {
+    if (!firestoreWorking) {
+      return readLocalDB().tickets[id] || null;
+    }
+
     try {
       const snap = await this.fsDb.collection("tickets").doc(id).get();
       if (snap.exists) {
@@ -248,13 +298,32 @@ export class DatabaseController {
       }
     } catch (err: any) {
       console.error("Firestore getTicket failed:", err.message);
-      throw err;
+      return readLocalDB().tickets[id] || null;
     }
     return null;
   }
 
+  async deleteTicket(id: string): Promise<void> {
+    const db = readLocalDB();
+    delete db.tickets[id];
+    writeLocalDB(db);
+
+    if (!firestoreWorking) return;
+
+    try {
+      await this.fsDb.collection("tickets").doc(id).delete();
+    } catch (err: any) {
+      console.error("Firestore deleteTicket failed:", err.message);
+      throw err;
+    }
+  }
+
   // sessions (Telegram bot session tracking)
   async getSession(userId: string): Promise<Session> {
+    if (!firestoreWorking) {
+      return readLocalDB().sessions[userId] || { userId, step: "idle" };
+    }
+
     try {
       const snap = await this.fsDb.collection("sessions").doc(userId).get();
       if (snap.exists) {
@@ -262,11 +331,18 @@ export class DatabaseController {
       }
     } catch (err: any) {
       console.error("Firestore getSession failed:", err.message);
+      return readLocalDB().sessions[userId] || { userId, step: "idle" };
     }
     return { userId, step: "idle" };
   }
 
   async saveSession(session: Session): Promise<void> {
+    const db = readLocalDB();
+    db.sessions[session.userId] = session;
+    writeLocalDB(db);
+
+    if (!firestoreWorking) return;
+
     try {
       await this.fsDb.collection("sessions").doc(session.userId).set(session);
     } catch (err: any) {
@@ -277,6 +353,12 @@ export class DatabaseController {
 
   // support messages
   async getSupportMessages(): Promise<SupportMessage[]> {
+    if (!firestoreWorking) {
+      return Object.values(readLocalDB().supportMessages || {}).sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+    }
+
     try {
       const snap = await this.fsDb.collection("support_messages").orderBy("createdAt", "desc").get();
       const list: SupportMessage[] = [];
@@ -286,11 +368,20 @@ export class DatabaseController {
       return list;
     } catch (err: any) {
       console.error("Firestore getSupportMessages failed:", err.message);
-      throw err;
+      return Object.values(readLocalDB().supportMessages || {}).sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
     }
   }
 
   async saveSupportMessage(msg: SupportMessage): Promise<void> {
+    const db = readLocalDB();
+    if (!db.supportMessages) db.supportMessages = {};
+    db.supportMessages[msg.id] = msg;
+    writeLocalDB(db);
+
+    if (!firestoreWorking) return;
+
     try {
       await this.fsDb.collection("support_messages").doc(msg.id).set(msg);
     } catch (err: any) {
@@ -300,6 +391,14 @@ export class DatabaseController {
   }
 
   async deleteSupportMessage(id: string): Promise<void> {
+    const db = readLocalDB();
+    if (db.supportMessages) {
+      delete db.supportMessages[id];
+      writeLocalDB(db);
+    }
+
+    if (!firestoreWorking) return;
+
     try {
       await this.fsDb.collection("support_messages").doc(id).delete();
     } catch (err: any) {
@@ -307,5 +406,6 @@ export class DatabaseController {
       throw err;
     }
   }
+
 }
 

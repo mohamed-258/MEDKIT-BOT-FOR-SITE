@@ -38,6 +38,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [selectedTicket, setSelectedTicket] = useState<TicketType | null>(null);
+  const [ticketToDeleteId, setTicketToDeleteId] = useState<string | null>(null);
   const [replyMessage, setReplyMessage] = useState("");
   const [submittingReply, setSubmittingReply] = useState(false);
   const [replySuccess, setReplySuccess] = useState(false);
@@ -597,6 +598,43 @@ export default function App() {
     }
   };
 
+  const handleDeleteTicket = async (id: string, force = false) => {
+    if (!force) {
+      setTicketToDeleteId(id);
+      return;
+    }
+
+    try {
+      // Optimistic update
+      const ticketToDelete = tickets.find(t => t.id === id);
+      setTickets(prev => prev.filter(t => t.id !== id));
+      setTicketToDeleteId(null);
+      
+      const res = await fetch(`/api/tickets/${id}`, {
+        method: "DELETE"
+      });
+      
+      if (res.ok) {
+        if (selectedTicket?.id === id) {
+          setSelectedTicket(null);
+        }
+        // Force refresh from server to be sure
+        fetchRESTTickets();
+      } else {
+        // Rollback on error
+        if (ticketToDelete) {
+          setTickets(prev => [ticketToDelete, ...prev].sort((a, b) => 
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          ));
+        }
+        alert("فشل حذف الطلب من الخادم. يرجى المحاولة مرة أخرى.");
+      }
+    } catch (err) {
+      console.error("Failed to delete ticket:", err);
+      alert("حدث خطأ أثناء محاولة الحذف. تأكد من اتصالك بالإنترنت.");
+    }
+  };
+
   // Filtering Tickets
   const filteredTickets = tickets.filter(t => {
     const matchesSearch = 
@@ -1119,17 +1157,54 @@ export default function App() {
                           >
                             <div className="flex items-center justify-between">
                               <h4 className="font-bold text-xs text-white sm:text-sm">{ticket.telegramName}</h4>
-                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                                ticket.status === "approved" 
-                                  ? "bg-emerald-500/10 text-emerald-400" 
-                                  : ticket.status === "rejected" 
-                                    ? "bg-red-500/10 text-red-500" 
-                                    : "bg-cyan-500/10 text-cyan-400 animate-pulse"
-                              }`}>
-                                {ticket.status === "approved" && "مقبول"}
-                                {ticket.status === "rejected" && "مرفوض"}
-                                {ticket.status === "new" && "جديد"}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
+                                  ticket.status === "approved" 
+                                    ? "bg-emerald-500/10 text-emerald-400" 
+                                    : ticket.status === "rejected" 
+                                      ? "bg-red-500/10 text-red-500" 
+                                      : "bg-cyan-500/10 text-cyan-400 animate-pulse"
+                                }`}>
+                                  {ticket.status === "approved" && "مقبول"}
+                                  {ticket.status === "rejected" && "مرفوض"}
+                                  {ticket.status === "new" && "جديد"}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  {ticketToDeleteId === ticket.id ? (
+                                    <div className="flex items-center bg-red-500/20 rounded-xl p-1 animate-in fade-in slide-in-from-right-2 duration-300">
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleDeleteTicket(ticket.id, true);
+                                        }}
+                                        className="px-2 py-1 text-[10px] font-bold text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-all"
+                                      >
+                                        حذف؟
+                                      </button>
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setTicketToDeleteId(null);
+                                        }}
+                                        className="p-1 text-slate-400 hover:text-white"
+                                      >
+                                        <X className="h-3 w-3" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteTicket(ticket.id);
+                                      }}
+                                      className="p-2 hover:bg-red-500/20 text-slate-400 hover:text-red-500 rounded-xl transition-all relative z-10"
+                                      title="حذف الطلب"
+                                    >
+                                      <Trash2 className="h-4 w-4" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
                             </div>
 
                             <div className="flex items-center justify-between text-xs text-slate-400">
@@ -1159,25 +1234,60 @@ export default function App() {
                       >
                         {/* Detail Header */}
                         <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 border-b border-white/5 pb-4">
-                          <div>
+                          <div className="flex-1">
                             <span className="text-[10px] uppercase font-bold tracking-wider text-cyan-400">طلب تفعيل كود ميدكيت مشترك</span>
-                            <h3 className="text-lg font-bold text-white mt-1">{selectedTicket.telegramName}</h3>
+                            <div className="flex items-center justify-between mt-1">
+                              <h3 className="text-lg font-bold text-white">{selectedTicket.telegramName}</h3>
+                              {ticketToDeleteId === selectedTicket.id ? (
+                                <div className="flex items-center gap-2 bg-red-500/10 p-1.5 rounded-xl border border-red-500/20 animate-in fade-in zoom-in-95 duration-200">
+                                  <span className="text-[10px] font-bold text-red-400 px-1">تأكيد الحذف؟</span>
+                                  <button 
+                                    onClick={() => handleDeleteTicket(selectedTicket.id, true)}
+                                    className="px-3 py-1 bg-red-500 text-white text-[10px] font-bold rounded-lg hover:bg-red-600 transition-all"
+                                  >
+                                    نعم
+                                  </button>
+                                  <button 
+                                    onClick={() => setTicketToDeleteId(null)}
+                                    className="p-1 px-2 text-[10px] text-slate-400 hover:text-white"
+                                  >
+                                    إلغاء
+                                  </button>
+                                </div>
+                              ) : (
+                                <button 
+                                  onClick={() => handleDeleteTicket(selectedTicket.id)}
+                                  className="sm:hidden p-2 bg-red-500/10 text-red-400 rounded-xl hover:bg-red-500/20 transition-all"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              )}
+                            </div>
                           </div>
                           
                           {/* Active State indicator */}
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-slate-500">حالة الطلب:</span>
-                            <span className={`px-2.5 py-1 text-xs font-bold rounded-xl border ${
-                              selectedTicket.status === "approved" 
-                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
-                                : selectedTicket.status === "rejected" 
-                                  ? "bg-red-500/10 text-red-500 border-red-500/20" 
-                                  : "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 animate-pulse"
-                            }`}>
-                              {selectedTicket.status === "approved" && "تم التفعيل مسبقاً ✅"}
-                              {selectedTicket.status === "rejected" && "تم رفض الطلب ❌"}
-                              {selectedTicket.status === "new" && "بانتظار المراجعة والتحويل ⏳"}
-                            </span>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-slate-500">حالة الطلب:</span>
+                              <span className={`px-2.5 py-1 text-xs font-bold rounded-xl border ${
+                                selectedTicket.status === "approved" 
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
+                                  : selectedTicket.status === "rejected" 
+                                    ? "bg-red-500/10 text-red-500 border-red-500/20" 
+                                    : "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 animate-pulse"
+                              }`}>
+                                {selectedTicket.status === "approved" && "تم التفعيل مسبقاً ✅"}
+                                {selectedTicket.status === "rejected" && "تم رفض الطلب ❌"}
+                                {selectedTicket.status === "new" && "بانتظار المراجعة والتحويل ⏳"}
+                              </span>
+                            </div>
+                            <button 
+                              onClick={() => handleDeleteTicket(selectedTicket.id)}
+                              className="hidden sm:flex p-2.5 bg-red-500/10 text-red-400 rounded-xl border border-red-500/20 hover:bg-red-500/20 transition-all"
+                              title="حذف الطلب نهائياً"
+                            >
+                              <Trash2 className="h-4.5 w-4.5" />
+                            </button>
                           </div>
                         </div>
 
