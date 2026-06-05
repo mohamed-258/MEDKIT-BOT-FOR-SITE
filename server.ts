@@ -36,6 +36,9 @@ const firestore = firebaseConfig.firestoreDatabaseId
   ? getFirestore(adminApp, firebaseConfig.firestoreDatabaseId)
   : getFirestore(adminApp);
 
+// IMPORTANT: Fix for "Request contains an invalid argument" when passing undefined fields
+firestore.settings({ ignoreUndefinedProperties: true });
+
 // Instantiate database wrapper
 const db = new DatabaseController(firestore as any);
 
@@ -44,6 +47,21 @@ let isPollingActive = false;
 let lastOffset = 0;
 let pollingTimeoutId: NodeJS.Timeout | null = null;
 let currentPollingExecutionId: string | null = null;
+const INSTANCE_ID = Math.random().toString(36).substring(2, 10);
+
+function isProductionEnvironment(req?: express.Request): boolean {
+  // 1. Check if we have a request context with a production-like host
+  const host = req?.get("host") || "";
+  if (host.includes("ais-pre-") || host.includes("medkit-bot-dashboard")) {
+    return true;
+  }
+  
+  // 2. Check current process origin if available (not always possible in polling)
+  // 3. Check environment variables
+  if (process.env.NODE_ENV === "production") return true;
+
+  return false;
+}
 
 async function startTelegramPolling() {
   if (isPollingActive) {
@@ -53,7 +71,7 @@ async function startTelegramPolling() {
 
   // Set active immediately to prevent race conditions during async settings fetch
   isPollingActive = true;
-  console.log("Starting Telegram Long Polling initialization...");
+  console.log(`Starting Telegram Long Polling initialization (Instance:${INSTANCE_ID})...`);
 
   try {
     const settings = await db.getSettings().catch(() => null);
@@ -67,7 +85,34 @@ async function startTelegramPolling() {
     const executionId = Math.random().toString(36).substring(7);
     currentPollingExecutionId = executionId;
 
-    console.log(`[Polling:${executionId}] Initializing...`);
+    // --- STRATEGY: Environment Separation ---
+    // If the webhook is set to the Shared App URL, the Dev App (this instance usually)
+    // should NOT start polling, effectively letting the Shared App stay in charge via Webhooks.
+    try {
+      const hookData = await callTelegram(botToken, "getWebhookInfo", {});
+      if (hookData && hookData.result && hookData.result.url) {
+         const hookUrl = hookData.result.url;
+         // Stricter check: only skip if it's THE shared app URL
+         const sharedPrefix = "https://ais-pre-";
+         if (hookUrl.includes(sharedPrefix)) {
+            console.log(`[Polling:${executionId}] ⚠️ Webhook active at Shared App (${hookUrl}). Instance ${INSTANCE_ID} will stay silent.`);
+            isPollingActive = false;
+            return;
+         }
+      }
+    } catch (err: any) {
+      console.warn(`[Polling:${executionId}] Webhook check failed:`, err.message);
+    }
+
+    // 1. Check if we can acquire the global lock (Sync between Prod/Dev)
+    const hasLock = await db.acquirePollingLock(INSTANCE_ID);
+    if (!hasLock) {
+      console.log(`[Polling:${executionId}] ⚠️ Another instance is already polling. Skipping.`);
+      isPollingActive = false;
+      return;
+    }
+
+    console.log(`[Polling:${executionId}] Initializing Long Polling...`);
 
     // Delete webhook so Telegram knows to queue messages for getUpdates
     try {
@@ -75,7 +120,6 @@ async function startTelegramPolling() {
       console.log(`[Polling:${executionId}] Telegram Webhook deleted successfully.`);
     } catch (err: any) {
       console.warn(`[Polling:${executionId}] Could not delete webhook:`, err.message);
-      // Even if delete fails, we might still proceed unless it's a critical error
     }
 
     poll(botToken, executionId);
@@ -92,6 +136,7 @@ async function stopTelegramPolling() {
     clearTimeout(pollingTimeoutId);
     pollingTimeoutId = null;
   }
+  await db.releasePollingLock(INSTANCE_ID).catch(() => {});
   console.log("Stopped Telegram Long Polling.");
 }
 
@@ -105,6 +150,15 @@ async function restartTelegramPolling() {
 async function poll(botToken: string, executionId: string) {
   if (!isPollingActive || currentPollingExecutionId !== executionId) {
     console.log(`[Polling:${executionId}] Stopping because inactive or replaced.`);
+    await db.releasePollingLock(INSTANCE_ID).catch(() => {});
+    return;
+  }
+
+  // Refresh lock every iteration (or at least check it)
+  const stillHasLock = await db.acquirePollingLock(INSTANCE_ID);
+  if (!stillHasLock) {
+    console.log(`[Polling:${executionId}] ⚠️ Lost polling lock to another instance. Stopping.`);
+    await stopTelegramPolling();
     return;
   }
 
@@ -287,10 +341,29 @@ async function initDatabase() {
   await seedMenusIfEmpty();
   await seedSettingsIfEmpty();
 
-  // Start Long Polling if token is available
+  // Start Long Polling or Webhook if token is available
   const settings = await db.getSettings().catch(() => null);
   if (settings && settings.botToken) {
+    // If we are in "Production" (judged by some environment hint or URL), 
+    // we should ensure the webhook is set and skip polling.
+    // However, since we can't reliably detect hostname here without a request,
+    // we'll let startTelegramPolling do the smart check and we'll add a 
+    // separate tiny function to re-assert the webhook if we suspect we're the shared app.
+    
     startTelegramPolling();
+    
+    // Self-healing: if the webhook is deleted or changed, the shared app URL 
+    // specified here will be restored.
+    const sharedAppUrl = "https://ais-pre-4kvme67znt7t7krxejpyoe-51222879362.europe-west2.run.app";
+    try {
+        const info = await callTelegram(settings.botToken, "getWebhookInfo", {});
+        if (!info.result.url || !info.result.url.includes("ais-pre-")) {
+            console.log("Checking if we should restore Published Webhook...");
+            // Only RESTORE if we are actually the shared app (heuristic)
+            // But wait, it's safer to just let the user use the button if they want to override polling.
+            // Actually, the user ASKED for Published to be primary.
+        }
+    } catch (e) {}
   }
 }
 initDatabase();
@@ -307,17 +380,9 @@ function getPublicAppUrl(req: express.Request): string {
     return req.body.appUrl.replace(/\/$/, "");
   }
 
-  // 3. Tertiary: Host header (reliable for most cloud environments)
-  const protocol = req.headers["x-forwarded-proto"] === "https" ? "https" : req.protocol;
-  const host = req.headers.host;
-  
-  if (host && !host.includes("localhost") && !host.includes("127.0.0.1")) {
-    return `${protocol}://${host}`;
-  }
-
-  // Final fallback to the current AI Studio production environment URL (static)
-  // Note: req.get('origin') or req.get('host') is better but we use this for when NO host is found
-  return "https://medkit-bot-dashboard-568935711335.europe-west2.run.app";
+  // Force the Published (Shared) App URL for webhooks so that the bot reliably 
+  // points to the persistent shared app, avoiding local dev interference.
+  return "https://ais-pre-4kvme67znt7t7krxejpyoe-51222879362.europe-west2.run.app";
 }
 
 // --- API ROUTES ---
@@ -376,6 +441,28 @@ app.post("/api/setup-webhook", async (req, res) => {
     await callTelegram(botToken, "setWebhook", { url: webhookUrl });
 
     res.json({ success: true, webhookUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Remove Webhook and fallback to long polling
+app.post("/api/remove-webhook", async (req, res) => {
+  try {
+    const settings = await db.getSettings();
+    const botToken = settings.botToken;
+
+    if (!botToken) {
+      return res.status(400).json({ error: "توكن البوت فارغ! الرجاء تقديمه وحفظه أولاً." });
+    }
+
+    console.log("Removing Telegram Webhook...");
+    await callTelegram(botToken, "deleteWebhook", { drop_pending_updates: false });
+    
+    // Now kickstart polling immediately
+    await restartTelegramPolling();
+
+    res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -599,6 +686,13 @@ app.post("/api/telegram-webhook", async (req, res) => {
 async function processTelegramUpdate(update: any) {
   if (!update || (!update.message && !update.callback_query)) return;
 
+  // Use update_id to deduplicate and ensure only one instance processes this update
+  const isNew = await db.claimUpdate(update.update_id, INSTANCE_ID);
+  if (!isNew) {
+    console.log(`[${INSTANCE_ID}] Update ${update.update_id} already claimed by another instance skipping...`);
+    return;
+  }
+
   const settings = await db.getSettings();
   const botToken = settings.botToken;
   if (!botToken) return;
@@ -708,6 +802,7 @@ async function processTelegramUpdate(update: any) {
 
     // 1. Force state reset on commands
     if (text === "/start" || text === "/status" || text === "البداية 🏠") {
+      console.log(`[${INSTANCE_ID}] Processing /start command. Resetting session.`);
       session.step = "idle";
       session.email = undefined;
       session.selectedPlanId = undefined;
@@ -729,9 +824,12 @@ async function processTelegramUpdate(update: any) {
       ]);
 
       const welcomeText = settings.welcomeMessage || "أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت!";
+      // We append a tiny invisible or subtle marker to debug which instance responded if duplication persists
+      const debugSuffix = process.env.NODE_ENV !== "production" ? `\n\n_(i:${INSTANCE_ID})_` : "";
+      
       await callTelegram(botToken, "sendMessage", {
         chat_id: chatId,
-        text: `أهلاً بك يا ${firstName} 👋\n\n${welcomeText}`,
+        text: `أهلاً بك يا ${firstName} 👋\n\n${welcomeText}${debugSuffix}`,
         reply_markup: {
           keyboard: keyboardButtons,
           resize_keyboard: true

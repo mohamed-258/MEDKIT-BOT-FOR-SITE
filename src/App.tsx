@@ -543,12 +543,34 @@ export default function App() {
     try {
       const res = await fetch("/api/setup-webhook", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ appUrl: window.location.origin })
+        headers: { "Content-Type": "application/json" }
       });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || "فشل تفعيل الويب هوك");
+      }
+      setWebhookSettingStatus("success");
+      fetchTelegramWebhookStatus();
+    } catch (err: any) {
+      setWebhookSettingStatus("error");
+      setWebhookErrorMsg(err.message || "حدث خطأ غير متوقع");
+    }
+  };
+
+  // Remove Bot Webhook to allow local testing
+  const removeBotWebhook = async () => {
+    setWebhookSettingStatus("idle");
+    setWebhookErrorMsg("");
+    if (!confirm("هل أنت متأكد أنك تريد إيقاف الويب هوك؟ هذا قد يوقف استلام البوت للرسائل إذا لم تكن تشغله محلياً.")) return;
+    
+    try {
+      const res = await fetch("/api/remove-webhook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "فشل إيقاف الويب هوك");
       }
       setWebhookSettingStatus("success");
       fetchTelegramWebhookStatus();
@@ -1997,6 +2019,16 @@ export default function App() {
                         <RefreshCw className="h-4.5 w-4.5 text-slate-100" />
                         ربط البوت بالويب هوك وتفعيله 🔌
                       </button>
+
+                      {webhookStatus?.configured && webhookStatus.webhookInfo?.url && (
+                        <button
+                          onClick={removeBotWebhook}
+                          className="w-full py-2 bg-slate-950 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-white/5 hover:border-red-500/30 rounded-xl text-[11px] transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          إيقاف الويب هوك (للعودة لوضع التطوير المحلي)
+                        </button>
+                      )}
 
                       <AnimatePresence>
                         {webhookSettingStatus === "success" && (

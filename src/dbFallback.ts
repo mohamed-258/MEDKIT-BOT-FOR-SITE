@@ -134,11 +134,11 @@ let firestoreWorking = true;
 
 export async function checkDatabaseStatus(firestoreInstance: admin.firestore.Firestore): Promise<boolean> {
   try {
-    // Try to get setting/global with a short 2s timeout
+    // Try to get setting/global with a slightly longer timeout for cloud cold starts
     const testPromise = firestoreInstance.collection("settings").doc("global").get();
-    const timeoutPromise = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Timeout")), 2500));
+    const timeoutPromise = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Firestore check timed out")), 5000));
     const snap = await Promise.race([testPromise, timeoutPromise]);
-    firestoreWorking = snap.exists || !snap.exists; // operational
+    firestoreWorking = snap.exists || !snap.exists; // operational if we got a response back
     console.log(`Database Link: FIRESTORE ACTIVE (operational=${firestoreWorking})`);
   } catch (err: any) {
     console.error("Database Link: FIRESTORE RESTRICTED (using local JSON storage layer). Error:", err.message);
@@ -405,6 +405,98 @@ export class DatabaseController {
       console.error("Firestore deleteSupportMessage failed:", err.message);
       throw err;
     }
+  }
+
+  /**
+   * Atomic check-and-claim for a Telegram update_id.
+   * Returns true if this instance successfully claimed the update.
+   * Returns false if the update was already processed by another instance.
+   */
+  async claimUpdate(updateId: number, instanceId?: string): Promise<boolean> {
+    if (!updateId) return true;
+    const id = updateId.toString();
+
+    // Local DB cleanup (keep last 500 updates to avoid bloat)
+    const db = readLocalDB();
+    if (!(db as any).processedUpdates) (db as any).processedUpdates = {};
+    const localMap = (db as any).processedUpdates;
+
+    if (localMap[id]) {
+      console.log(`[${instanceId || "DB"}] Update ${id} already processed (LOCAL).`);
+      return false;
+    }
+
+    localMap[id] = true;
+    if (Object.keys(localMap).length > 1000) {
+      (db as any).processedUpdates = { [id]: true }; 
+    }
+    writeLocalDB(db);
+
+    if (!firestoreWorking) {
+      console.log(`[${instanceId || "DB"}] Firestore not working, returning TRUE for update ${id} (Bypassed sync).`);
+      return true;
+    }
+
+    try {
+      await this.fsDb.collection("processed_updates").doc(id).create({ 
+        createdAt: new Date().toISOString(),
+        instanceId: instanceId || "unknown"
+      });
+      console.log(`[${instanceId || "DB"}] Successfully CLAIMED update ${id} in Firestore.`);
+      return true;
+    } catch (err: any) {
+      if (err.code === 6 || (err.message && err.message.includes("already exists"))) {
+        console.log(`[${instanceId || "DB"}] Update ${id} already claimed by another instance in Firestore.`);
+        return false;
+      }
+      console.log(`[${instanceId || "DB"}] Firestore error claiming update ${id}:`, err.message);
+      return true; 
+    }
+  }
+
+  /**
+   * Acquisition of a global polling lock to ensure only one instance polls at a time.
+   * instanceId: unique ID for this bot process
+   * Returns true if lock acquired or held.
+   */
+  async acquirePollingLock(instanceId: string): Promise<boolean> {
+    if (!firestoreWorking) return true; // Local dev usually has no competition or no firestore sync
+
+    try {
+      const lockRef = this.fsDb.collection("system").doc("polling_lock");
+      const snap = await lockRef.get();
+      const now = Date.now();
+
+      if (snap.exists) {
+        const data = snap.data();
+        // If the lock is fresh (last heartbeat < 45s) and held by someone else
+        if (data && data.instanceId !== instanceId && (now - data.timestamp) < 45000) {
+          return false;
+        }
+      }
+
+      // Claim or refresh the lock
+      await lockRef.set({
+        instanceId,
+        timestamp: now,
+        updatedAt: new Date().toISOString()
+      });
+      return true;
+    } catch (err) {
+      console.error("Error acquiring polling lock:", err);
+      return true; // Fallback to allowing polling on failure
+    }
+  }
+
+  async releasePollingLock(instanceId: string): Promise<void> {
+    if (!firestoreWorking) return;
+    try {
+      const lockRef = this.fsDb.collection("system").doc("polling_lock");
+      const snap = await lockRef.get();
+      if (snap.exists && snap.data()?.instanceId === instanceId) {
+        await lockRef.delete();
+      }
+    } catch (err) {}
   }
 
 }
