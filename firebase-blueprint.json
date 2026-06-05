@@ -1,0 +1,82 @@
+{
+  "entities": {
+    "Setting": {
+      "title": "Setting",
+      "description": "Telegram bot global settings",
+      "type": "object",
+      "properties": {
+        "botToken": { "type": "string", "description": "The telegram bot API token" },
+        "adminChatId": { "type": "string", "description": "The telegram chat ID of the bot admin" },
+        "welcomeMessage": { "type": "string", "description": "Greeting message when starting the bot" }
+      }
+    },
+    "Menu": {
+      "title": "Menu",
+      "description": "Subscription options or menus",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique menu ID" },
+        "title": { "type": "string", "description": "Button title on keyboard" },
+        "price": { "type": "string", "description": "Price details" },
+        "description": { "type": "string", "description": "Brief description" },
+        "details": { "type": "string", "description": "Complete details shown upon selection" }
+      },
+      "required": ["id", "title"]
+    },
+    "Ticket": {
+      "title": "Ticket",
+      "description": "A subscription request submitted by an end-user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Ticket ID" },
+        "telegramUserId": { "type": "string" },
+        "telegramUsername": { "type": "string" },
+        "telegramName": { "type": "string" },
+        "email": { "type": "string" },
+        "menuId": { "type": "string" },
+        "menuTitle": { "type": "string" },
+        "receiptPhotoUrl": { "type": "string" },
+        "status": { "type": "string", "enum": ["new", "approved", "rejected"] },
+        "adminComment": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "telegramUserId", "email"]
+    },
+    "SupportMessage": {
+      "title": "SupportMessage",
+      "description": "A user support message sent through the bot",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Support message ID" },
+        "telegramUserId": { "type": "string" },
+        "telegramUsername": { "type": "string" },
+        "telegramName": { "type": "string" },
+        "messageText": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "replied": { "type": "boolean" },
+        "replyText": { "type": "string" },
+        "repliedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "telegramUserId", "messageText"]
+    }
+  },
+  "firestore": {
+    "/settings/{settingId}": {
+      "schema": "Setting",
+      "description": "Collection storing global settings"
+    },
+    "/menus/{menuId}": {
+      "schema": "Menu",
+      "description": "Collection of subscription menus"
+    },
+    "/tickets/{ticketId}": {
+      "schema": "Ticket",
+      "description": "Collection of user subscription tickets"
+    },
+    "/support_messages/{messageId}": {
+      "schema": "SupportMessage",
+      "description": "Collection of user support messages"
+    }
+  }
+}

@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Check if the user is the authorized admin email or UID
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.uid == "ZKWHNUcRBqRZlfMr3PIleuyntP62" ||
+        request.auth.token.email == "mhsn68503@gmail.com" ||
+        (exists(/databases/$(database)/documents/settings/global) && 
+         "allowedEmails" in get(/databases/$(database)/documents/settings/global).data &&
+         request.auth.token.email in get(/databases/$(database)/documents/settings/global).data.allowedEmails)
+      );
+    }
+
+    // Allow read/write on all collections only to verified admin
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /menus/{menuId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /tickets/{ticketId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /support_messages/{messageId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    match /sessions/{userId} {
+      allow read, write: if true;
+    }
+
+    // Global Safety Net at the bottom
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

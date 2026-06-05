@@ -1,0 +1,95 @@
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Cairo", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Overwrite the Slate palette with Elegant Dark's custom values */
+  --color-slate-950: #09090b; /* --bg */
+  --color-slate-900: #18181b; /* --surface */
+  --color-slate-800: #27272a; /* --border */
+  --color-slate-700: #3f3f46;
+  --color-slate-600: #52525b;
+  --color-slate-500: #71717a;
+  --color-slate-400: #a1a1aa; /* --muted */
+  --color-slate-300: #d4d4d8;
+  --color-slate-200: #e4e4e7;
+  --color-slate-100: #fafafa; /* --text */
+
+  /* Overwrite Cyan & Teal color families with Elegant Dark's custom Blue Accents */
+  --color-cyan-950: rgba(59, 130, 246, 0.05);
+  --color-cyan-900: rgba(59, 130, 246, 0.1);
+  --color-cyan-850: rgba(59, 130, 246, 0.15);
+  --color-cyan-800: #1e40af;
+  --color-cyan-700: #1d4ed8;
+  --color-cyan-600: #2563eb;
+  --color-cyan-500: #3b82f6; /* --accent */
+  --color-cyan-400: #60a5fa; /* --accent-light */
+  --color-cyan-300: #93c5fd;
+  --color-cyan-200: #bfdbfe;
+  --color-cyan-100: #dbeafe;
+
+  --color-teal-950: rgba(59, 130, 246, 0.05);
+  --color-teal-900: rgba(59, 130, 246, 0.15);
+  --color-teal-800: #1e40af;
+  --color-teal-700: #1d4ed8;
+  --color-teal-600: #2563eb;
+  --color-teal-500: #3b82f6;
+  --color-teal-400: #60a5fa;
+}
+
+:root {
+  --bg: #09090b;
+  --surface: #18181b;
+  --border: #27272a;
+  --text: #fafafa;
+  --muted: #a1a1aa;
+  --accent: #3b82f6;
+  --accent-light: #60a5fa;
+}
+
+/* Custom smooth transitions */
+.transition-all {
+  transition-property: all;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 200ms;
+}
+
+/* Scrollbar Customization matching Elegant Dark zinc style */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Set global system body element styles */
+body {
+  background-color: var(--bg) !important;
+  color: var(--text) !important;
+  font-family: "Cairo", "Inter", sans-serif;
+  margin: 0;
+}
+
+/* Ensure that all border-white/5 and border-white/10 classes strictly resolve to the design border color */
+.border-white\/5, .border-white\/10 {
+  border-color: var(--border) !important;
+}
+
+/* Smooth input styling focusing */
+input:focus, textarea:focus, select:focus {
+  border-color: var(--accent-light) !important;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.15) !important;
+}
