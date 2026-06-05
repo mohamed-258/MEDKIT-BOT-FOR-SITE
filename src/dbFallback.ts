@@ -106,29 +106,21 @@ const DEFAULT_DB: LocalDB = {
   supportMessages: {}
 };
 
-// Singleton storage cache for speed
-let memoryDB: LocalDB | null = null;
-
 // Read JSON DB
 function readLocalDB(): LocalDB {
-  if (memoryDB) return memoryDB;
   try {
     if (fs.existsSync(LOCAL_DB_PATH)) {
       const data = fs.readFileSync(LOCAL_DB_PATH, "utf-8");
-      memoryDB = { ...DEFAULT_DB, ...JSON.parse(data) };
-      return memoryDB!;
+      return { ...DEFAULT_DB, ...JSON.parse(data) };
     }
   } catch (error) {
     console.error("Failed to read local DB, fallback to default:", error);
   }
-  memoryDB = DEFAULT_DB;
-  writeLocalDB(memoryDB);
-  return memoryDB;
+  return DEFAULT_DB;
 }
 
 // Write JSON DB
 function writeLocalDB(db: LocalDB) {
-  memoryDB = db;
   try {
     fs.writeFileSync(LOCAL_DB_PATH, JSON.stringify(db, null, 2), "utf-8");
   } catch (error) {

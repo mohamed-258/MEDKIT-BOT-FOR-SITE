@@ -7,7 +7,9 @@
       "properties": {
         "botToken": { "type": "string", "description": "The telegram bot API token" },
         "adminChatId": { "type": "string", "description": "The telegram chat ID of the bot admin" },
-        "welcomeMessage": { "type": "string", "description": "Greeting message when starting the bot" }
+        "welcomeMessage": { "type": "string", "description": "Greeting message when starting the bot" },
+        "allowedEmails": { "type": "array", "items": { "type": "string" }, "description": "List of Gmail accounts allowed to access dashboard" },
+        "seededMenus": { "type": "boolean" }
       }
     },
     "Menu": {

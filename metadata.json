@@ -1,6 +1,6 @@
 {
-  "name": "MedKit Bot Dashboard",
-  "description": "لوحة تحكم ذكية وبوت تيليجرام يعمل على مدار 24 ساعة لاستقبال طلبات تفعيل اشتراكات منصة ميدكيت الطبية والمراجعة السريعة.",
+  "name": "Medkit Admin Dashboard",
+  "description": "Smart dashboard and Telegram bot for Medkit medical platform subscription management, allowing 24/7 activation and user support.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

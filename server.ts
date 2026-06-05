@@ -36,33 +36,51 @@ const db = new DatabaseController(firestore);
 let isPollingActive = false;
 let lastOffset = 0;
 let pollingTimeoutId: NodeJS.Timeout | null = null;
+let currentPollingExecutionId: string | null = null;
 
 async function startTelegramPolling() {
-  if (isPollingActive) return;
-
-  const settings = await db.getSettings().catch(() => null);
-  const botToken = settings?.botToken;
-  if (!botToken) {
-    console.log("Telegram Token is empty, skipping polling startup.");
+  if (isPollingActive) {
+    console.log("startTelegramPolling called but isPollingActive is already true.");
     return;
   }
 
+  // Set active immediately to prevent race conditions during async settings fetch
   isPollingActive = true;
-  console.log("Starting Telegram Long Polling...");
+  console.log("Starting Telegram Long Polling initialization...");
 
-  // Delete webhook so Telegram knows to queue messages for getUpdates
   try {
-    await callTelegram(botToken, "deleteWebhook", { drop_pending_updates: false });
-    console.log("Telegram Webhook deleted successfully to enable Long Polling.");
-  } catch (err: any) {
-    console.warn("Could not delete webhook before starting polling:", err.message);
-  }
+    const settings = await db.getSettings().catch(() => null);
+    const botToken = settings?.botToken;
+    if (!botToken) {
+      console.log("Telegram Token is empty, skipping polling startup.");
+      isPollingActive = false;
+      return;
+    }
 
-  poll(botToken);
+    const executionId = Math.random().toString(36).substring(7);
+    currentPollingExecutionId = executionId;
+
+    console.log(`[Polling:${executionId}] Initializing...`);
+
+    // Delete webhook so Telegram knows to queue messages for getUpdates
+    try {
+      await callTelegram(botToken, "deleteWebhook", { drop_pending_updates: false });
+      console.log(`[Polling:${executionId}] Telegram Webhook deleted successfully.`);
+    } catch (err: any) {
+      console.warn(`[Polling:${executionId}] Could not delete webhook:`, err.message);
+      // Even if delete fails, we might still proceed unless it's a critical error
+    }
+
+    poll(botToken, executionId);
+  } catch (err) {
+    console.error("Critical error in startTelegramPolling:", err);
+    isPollingActive = false;
+  }
 }
 
 async function stopTelegramPolling() {
   isPollingActive = false;
+  currentPollingExecutionId = null;
   if (pollingTimeoutId) {
     clearTimeout(pollingTimeoutId);
     pollingTimeoutId = null;
@@ -77,31 +95,45 @@ async function restartTelegramPolling() {
   }, 1000);
 }
 
-async function poll(botToken: string) {
-  if (!isPollingActive) return;
+async function poll(botToken: string, executionId: string) {
+  if (!isPollingActive || currentPollingExecutionId !== executionId) {
+    console.log(`[Polling:${executionId}] Stopping because inactive or replaced.`);
+    return;
+  }
 
   try {
-    const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates?offset=${lastOffset + 1}&timeout=10&limit=50`);
-    if (!response.ok) {
+    const response = await fetch(`https://api.telegram.org/bot${botToken}/getUpdates?offset=${lastOffset + 1}&timeout=15&limit=50`);
+    
+    if (response.status === 409) {
+      console.error(`[Polling:${executionId}] 409 Conflict - Another instance or getUpdates call is active. Waiting 10s...`);
+      // Important to wait longer on 409 to let other connections die
+      await new Promise((resolve) => setTimeout(resolve, 10000));
+      // Optionally stop this loop to prevent infinite fighting
+      // stopTelegramPolling(); 
+      // return;
+    } else if (!response.ok) {
       throw new Error(`getUpdates request failed with status ${response.status}`);
-    }
-    const data = await response.json();
-    if (data.ok && data.result && data.result.length > 0) {
-      for (const update of data.result) {
-        lastOffset = Math.max(lastOffset, update.update_id);
-        await processTelegramUpdate(update).catch((err: any) => {
-          console.error("Error processing update from polling:", err);
-        });
+    } else {
+      const data = await response.json();
+      if (data.ok && data.result && data.result.length > 0) {
+        for (const update of data.result) {
+          lastOffset = Math.max(lastOffset, update.update_id);
+          await processTelegramUpdate(update).catch((err: any) => {
+            console.error(`[Polling:${executionId}] Error processing update:`, err);
+          });
+        }
       }
     }
   } catch (err: any) {
-    console.error("Error in Telegram polling ticks:", err.message);
+    if (!err.message.includes("409")) {
+      console.error(`[Polling:${executionId}] Error in loop:`, err.message);
+    }
     // Wait standard timeout to prevent spam on connectivity failure
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 
-  if (isPollingActive) {
-    pollingTimeoutId = setTimeout(() => poll(botToken), 500);
+  if (isPollingActive && currentPollingExecutionId === executionId) {
+    pollingTimeoutId = setTimeout(() => poll(botToken, executionId), 1000);
   }
 }
 
@@ -156,21 +188,21 @@ async function seedMenusIfEmpty() {
           title: "mid RRS",
           price: "300 جنيه مصري",
           description: "باقة كود التشخيص والمراجعة السريعة RRS (سنتين)",
-          details: "📍 باقة تفعيل كود منصة ميدكيت الطبية RRS:\n\nتشمل باقة التفعيل الميزات التالية:\n🟢 صلاحية كاملة لمدة سنتين كاملتين (24 شهراً).\n🟢 الوصول السريع إلى تشخيص الحالات والدعم اللا محدود.\n🟢 كود مراجعة مخصص.\n\n💰 قيمة الاشتراك: 300 جنيه مصري فقط.\n\n👈 لإتمام التفعيل، يرجى كتابة بريدك الإلكتروني المسجل في المنصة بالأسفل."
+          details: "📍 باقة تفعيل كود منصة ميدكيت الطبية RRS:\n\nتشمل باقة التفعيل الميزات التالية:\n🟢 صلاحية كاملة لمدة سنتين كاملتين (24 شهراً).\n🟢 الوصول السريع إلى تشخيص الحالات والدعم اللا محدود.\n🟢 كود مراجعة مخصص.\n\n💰 قيمة الاشتراك: 300 جنيه مصري فقط."
         },
         {
           id: "mid_ecg",
           title: "mid ECG",
           price: "200 جنيه مصري",
           description: "باقة كورس رسم القلب واشتراك 12 شهر",
-          details: "📍 باقة التفعيل لكورس رسم القلب الشامل mid ECG:\n\nتشمل الباقة الميزات التالية:\n🟢 كورس رسم القلب الشامل لجميع المستويات.\n🟢 صلاحية وصول للمواد الطبية لمدة 12 شهر.\n🟢 شهادة إتمام رقمية مجانية للطلاب والممارسين.\n\n💰 قيمة الاشتراك: 200 جنيه مصري فقط.\n\n👈 لإتمام التفعيل، يرجى كتابة بريدك الإلكتروني المسجل في المنصة بالأسفل."
+          details: "📍 باقة التفعيل لكورس رسم القلب الشامل mid ECG:\n\nتشمل الباقة الميزات التالية:\n🟢 كورس رسم القلب الشامل لجميع المستويات.\n🟢 صلاحية وصول للمواد الطبية لمدة 12 شهر.\n🟢 شهادة إتمام رقمية مجانية للطلاب والممارسين.\n\n💰 قيمة الاشتراك: 200 جنيه مصري فقط."
         },
         {
           id: "mid_premium",
           title: "mid Premium الشامل",
           price: "500 جنيه مصري",
           description: "الاشتراك المميز لكافة كورسات وخدمات منصة ميدكيت",
-          details: "📍 باقة التفعيل الشاملة mid Premium:\n\nتشمل هذه الباقة الحصرية الميزات التالية:\n🟢 الوصول لكافة الكورسات الطبية المتاحة بالمنصة والمستقبلية.\n🟢 تفعيل كود RRS وكورس ECG مدى الحياة.\n🟢 دعم طبي واستشارات فنية VIP.\n\n💰 قيمة الاشتراك: 500 جنيه مصري فقط.\n\n👈 لإتمام التفعيل، يرجى كتابة بريدك الإلكتروني المسجل في المنصة بالأسفل."
+          details: "📍 باقة التفعيل الشاملة mid Premium:\n\nتشمل هذه الباقة الحصرية الميزات التالية:\n🟢 الوصول لكافة الكورسات الطبية المتاحة بالمنصة والمستقبلية.\n🟢 تفعيل كود RRS وكورس ECG مدى الحياة.\n🟢 دعم طبي واستشارات فنية VIP.\n\n💰 قيمة الاشتراك: 500 جنيه مصري فقط."
         }
       ];
 
@@ -584,17 +616,84 @@ async function processTelegramUpdate(update: any) {
       };
     }
 
+    // --- HELPER: Ticket Completion Logic ---
+    const completeTicket = async (finalEmail: string, finalImage: string, planId: string) => {
+      const ticketId = "tick_" + Math.random().toString(36).substring(2, 11);
+      const menusList = await db.getMenus();
+      const selectedPlan = menusList.find(m => m.id === planId);
+      const planTitle = selectedPlan ? selectedPlan.title : "باقة تفعيل ميدكيت";
+
+      const ticket = {
+        id: ticketId,
+        userId: userId,
+        telegramUserId: userId,
+        telegramUsername: username,
+        telegramName: fullName,
+        username: username,
+        fullName: fullName,
+        email: finalEmail,
+        planId: planId,
+        planTitle: planTitle,
+        receiptPhotoUrl: finalImage,
+        transactionImage: finalImage,
+        status: "new",
+        adminComment: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      await db.saveTicket(ticket);
+
+      // Reset user session
+      session.step = "idle";
+      session.email = undefined;
+      session.selectedPlanId = undefined;
+      session.transactionImage = undefined;
+      await db.saveSession(session);
+
+      // Confirmation to user
+      let clientDoneMsg = `🎉 *تم طلب تفعيل الاشتراك بنجاح!*\n\n`;
+      clientDoneMsg += `📦 الباقة: *${planTitle}*\n`;
+      clientDoneMsg += `📩 بريدك: \`${finalEmail}\`\n\n`;
+      clientDoneMsg += `🔍 نقوم حالياً بمراجعة تحويلك وسنقوم بالرد عليك برسالة تأكيد هنا فوراً بعد التدقيق. شكراً لك! ❤️`;
+
+      await callTelegram(botToken, "sendMessage", {
+        chat_id: chatId,
+        text: clientDoneMsg,
+        parse_mode: "Markdown"
+      }).catch((err) => console.error("Error sending subscription confirmation:", err));
+
+      // Notification to Admin
+      const adminChatId = settings.adminChatId;
+      if (adminChatId && adminChatId.toString().trim() !== botId && !adminChatId.toString().trim().includes(":")) {
+        let adminAlertMsg = `🔔 *طلب اشتراك جديد قيد المراجعــة!*\n\n`;
+        adminAlertMsg += `👤 العميل: *${fullName}* (@${username})\n`;
+        adminAlertMsg += `✉️ البريد: \`${finalEmail}\`\n`;
+        adminAlertMsg += `📦 الباقة: *${planTitle}*\n`;
+        adminAlertMsg += `🆔 التذكرة: \`${ticketId}\`\n\n`;
+        adminAlertMsg += `👇 الإيصال مرفق:`;
+
+        await callTelegram(botToken, "sendMessage", {
+          chat_id: adminChatId,
+          text: adminAlertMsg,
+          parse_mode: "Markdown"
+        }).catch((err) => console.error("Error sending admin alert:", err));
+
+        // Note: For photo forwarding, we would need the file_id if it's available.
+        // If we only have base64, we'd use sendPhoto with a buffer/base64 but Telegram mostly prefers file_id or URL.
+        // The photo handling block will handle photo forwarding.
+      }
+    };
+
     // 1. Force state reset on commands
     if (text === "/start" || text === "/status" || text === "البداية 🏠") {
       session.step = "idle";
       session.email = undefined;
       session.selectedPlanId = undefined;
+      session.transactionImage = undefined;
       await db.saveSession(session);
 
-      // Fetch menus
       const menusList = await db.getMenus();
-
-      // Dynamic Keyboard layout
       const keyboardButtons = [];
       for (let i = 0; i < menusList.length; i += 2) {
         const row = [{ text: menusList[i].title }];
@@ -608,7 +707,7 @@ async function processTelegramUpdate(update: any) {
         { text: "تحدث مع الدعم 📞" }
       ]);
 
-      const welcomeText = settings.welcomeMessage || "أهلاً بك في بوت اشتراك منصة ميدكيت المعتمد!";
+      const welcomeText = settings.welcomeMessage || "أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت!";
       await callTelegram(botToken, "sendMessage", {
         chat_id: chatId,
         text: `أهلاً بك يا ${firstName} 👋\n\n${welcomeText}`,
@@ -616,11 +715,11 @@ async function processTelegramUpdate(update: any) {
           keyboard: keyboardButtons,
           resize_keyboard: true
         }
-      }).catch((err) => console.error("Error sending welcome message:", err));
+      });
       return;
     }
 
-    // 2. Query status button check
+    // 2. Query status button
     if (text === "التحقق من حالة اشتراكي 🔍") {
       const tickets = await db.getTickets();
       const userTicket = tickets.find(t => t.telegramUserId === userId);
@@ -628,91 +727,38 @@ async function processTelegramUpdate(update: any) {
       if (!userTicket) {
         await callTelegram(botToken, "sendMessage", {
           chat_id: chatId,
-          text: "🔍 ليس لديك أي طلبات اشتراك سابقة حالياً.\nيمكنك البدء باختيار باقة اشتراك من الأزرار بالأسفل!"
-        }).catch((err) => console.error("Error sending no tickets msg:", err));
+          text: "🔍 ليس لديك أي طلبات سابقة حالياً.\nيمكنك البدء باختيار باقة اشتراك!"
+        });
       } else {
         const pStatus = translateStatus(userTicket.status);
-        const formattedDate = new Date(userTicket.createdAt).toLocaleDateString("ar-EG");
-
-        let statusMsg = `ℹ️ *حالة آخر طلب اشتراك لك:*\n\n`;
+        let statusMsg = `ℹ️ *حالة طلبك الأخير:*\n\n`;
         statusMsg += ` الباقة: *${userTicket.planTitle}*\n`;
-        statusMsg += ` البريد المسجل: \`${userTicket.email}\`\n`;
-        statusMsg += ` حالة التفعيل: *${pStatus}*\n`;
-        statusMsg += ` تاريخ الطلب: ${formattedDate}\n\n`;
-        if (userTicket.adminComment) {
-          statusMsg += `💬 *رد الإدارة:* ${userTicket.adminComment}\n`;
-        }
+        statusMsg += ` البريد: \`${userTicket.email}\`\n`;
+        statusMsg += ` الحالة: *${pStatus}*\n\n`;
+        if (userTicket.adminComment) statusMsg += `💬 *رد الإدارة:* ${userTicket.adminComment}\n`;
 
         await callTelegram(botToken, "sendMessage", {
           chat_id: chatId,
           text: statusMsg,
           parse_mode: "Markdown"
-        }).catch((err) => console.error("Error sending user status msg:", err));
+        });
       }
       return;
     }
 
-    // 3. Talk with support button
+    // 3. Talk with support
     if (text === "تحدث مع الدعم 📞") {
       session.step = "support";
       await db.saveSession(session);
-
       await callTelegram(botToken, "sendMessage", {
         chat_id: chatId,
-        text: "💬 أنت الآن متصل بالدعم الفني المباشر لمنصة ميدكيت.\nيرجى كتابة رسالتك بوضوح وسيقوم المسؤول بالرد عليك هنا فوراً."
-      }).catch((err) => console.error("Error sending support invitation:", err));
+        text: "💬 أنت مرسل للدعم الفني الآن. يرجى كتابة رسالتك وسنقوم بالرد عليك فوراً."
+      });
       return;
     }
 
-    // 4. Check if text matches subscription options
-    const menusList = await db.getMenus();
-    const matchedMenu = menusList.find(m => m.title.trim().toLowerCase() === text.toLowerCase());
-
-    if (matchedMenu) {
-      session.step = "awaiting_email";
-      session.selectedPlanId = matchedMenu.id;
-      await db.saveSession(session);
-
-      await callTelegram(botToken, "sendMessage", {
-        chat_id: chatId,
-        text: `${matchedMenu.details}`
-      }).catch((err) => console.error("Error sending plan details:", err));
-      return;
-    }
-
-    // 5. Handling session state "awaiting_email"
-    if (session.step === "awaiting_email") {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (emailRegex.test(text)) {
-        session.step = "awaiting_receipt";
-        session.email = text;
-        await db.saveSession(session);
-
-        // Get plan title
-        const selectedPlan = menusList.find(m => m.id === session.selectedPlanId);
-        const planTitle = selectedPlan ? selectedPlan.title : "طلب تفعيل ميدكيت";
-
-        let replyText = `📩 تم تسجيل بريدك الإلكتروني بنجاح: \`${text}\`\n\n`;
-        replyText += `💳 *الخطوة الأخيرة للحصول على باقة (${planTitle}):*\n`;
-        replyText += `يرجى إرسال لقطة الشاشة (إيصال التحويل المالي أو كود الدفع) هنا كصورة لتفعيل حسابك على الفور:`;
-
-        await callTelegram(botToken, "sendMessage", {
-          chat_id: chatId,
-          text: replyText,
-          parse_mode: "Markdown"
-        }).catch((err) => console.error("Error sending email success message:", err));
-      } else {
-        await callTelegram(botToken, "sendMessage", {
-          chat_id: chatId,
-          text: "❌ البريد الإلكتروني المدخل غير صحيح.\nيرجى إعادة إرسال البريد الإلكتروني الصحيح الذي سجلت به في المنصة لتتم المراجعة بشكل صحيح (مثال: example@gmail.com):"
-        }).catch((err) => console.error("Error sending invalid email warning:", err));
-      }
-      return;
-    }
-
-    // 6. Handling session state "support"
-    if (session.step === "support") {
-      // Save support message dynamically to DB for dashboard viewing
+    // 4. Support state handling
+    if (session.step === "support" && text && text !== "البداية 🏠") {
       try {
         const msgId = "msg_" + Math.random().toString(36).substring(2, 11);
         await db.saveSupportMessage({
@@ -720,134 +766,126 @@ async function processTelegramUpdate(update: any) {
           telegramUserId: userId,
           telegramUsername: username,
           telegramName: fullName,
-          messageText: text || "[ملف أو رسالة ليست نصية]",
+          messageText: text,
           createdAt: new Date().toISOString(),
           replied: false
         });
-        console.log(`Success: saved user support message from ${fullName} to database`);
-      } catch (err) {
-        console.error("Warning: Error saving support message to database:", err);
-      }
-
-      const adminChatId = settings.adminChatId;
-      if (adminChatId && adminChatId.toString().trim() !== botId && !adminChatId.toString().trim().includes(":")) {
-        let supportMsgToAdmin = `🚨 *رسالة دعم فني جديدة:*\n\n`;
-        supportMsgToAdmin += `👤 المرسل: ${fullName} (@${username})\n`;
-        supportMsgToAdmin += `🆔 شات ID: \`${chatId}\`\n\n`;
-        supportMsgToAdmin += `✉️ الرسالة:\n_${text}_`;
-
-        await callTelegram(botToken, "sendMessage", {
-          chat_id: adminChatId,
-          text: supportMsgToAdmin,
-          parse_mode: "Markdown"
-        }).catch((err) => console.error("Error sending support notification to adminChatId:", err));
-      }
+        
+        const adminChatId = settings.adminChatId;
+        if (adminChatId) {
+            await callTelegram(botToken, "sendMessage", {
+                chat_id: adminChatId,
+                text: `🚨 *رسالة دعم جديدة:*\n👤 ${fullName}\n✉️ ${text}`,
+                parse_mode: "Markdown"
+            }).catch(() => {});
+        }
+      } catch (err) {}
 
       await callTelegram(botToken, "sendMessage", {
         chat_id: chatId,
-        text: "✅ تم تسليم رسالتك لإدارة ميدكيت. شكراً لك وسنرد عليك قريباً."
-      }).catch((err) => console.error("Error sending support confirmation to user:", err));
+        text: "✅ تم استلام رسالتك. سيتم الرد عليك قريباً."
+      });
       return;
     }
 
-    // 7. Handling photo upload if in "awaiting_receipt"
-    if (message.photo && message.photo.length > 0) {
-      if (session.step === "awaiting_receipt") {
-        const photoObj = message.photo[message.photo.length - 1]; // largest resolution
-        const fileId = photoObj.file_id;
+    // 5. Subscription Plan Selection
+    const menusList = await db.getMenus();
+    const matchedMenu = menusList.find(m => m.title.trim().toLowerCase() === text.toLowerCase());
+    if (matchedMenu) {
+      session.step = "awaiting_info";
+      session.selectedPlanId = matchedMenu.id;
+      session.email = undefined;
+      session.transactionImage = undefined;
+      await db.saveSession(session);
 
-        // Retrieve file path
-        const fileInfo = await callTelegram(botToken, "getFile", { file_id: fileId });
-        const filePath = fileInfo.result.file_path;
+      let instr = `${matchedMenu.details}\n\n`;
+      instr += "💡 *يرجى إرسال الآتي لإتمام الطلب:*\n";
+      instr += "1️⃣ بريدك الإلكتروني المسجل بالمنصة.\n";
+      instr += "2️⃣ صورة إيصال التحويل (وودافون كاش أو غيره).\n\n";
+      instr += "*(يمكنك إرسال أي منهما أولاً، وسننتظر الآخر لإتمام الطلب)*";
 
-        // Download image and convert to Base64
-        const fileDownloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
-        const downloadResponse = await fetch(fileDownloadUrl);
-        const arrayBuffer = await downloadResponse.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        const base64Image = `data:image/jpeg;base64,${buffer.toString("base64")}`;
+      await callTelegram(botToken, "sendMessage", {
+        chat_id: chatId,
+        text: instr,
+        parse_mode: "Markdown"
+      });
+      return;
+    }
 
-        // Create ticket
-        const ticketId = "tick_" + Math.random().toString(36).substring(2, 11);
-        const selectedPlan = menusList.find(m => m.id === session.selectedPlanId);
-        const planTitle = selectedPlan ? selectedPlan.title : "باقة تفعيل ميدكيت";
-
-        const ticket = {
-          id: ticketId,
-          userId: userId, // required by types/schema
-          telegramUserId: userId,
-          telegramUsername: username,
-          telegramName: fullName,
-          username: username,
-          fullName: fullName,
-          email: session.email || "",
-          planId: session.selectedPlanId || "custom",
-          planTitle: planTitle,
-          receiptPhotoUrl: base64Image,
-          transactionImage: base64Image, // match schema key
-          status: "new",
-          adminComment: "",
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
-
-        await db.saveTicket(ticket);
-
-        // Reset user session
-        session.step = "idle";
-        session.email = undefined;
-        session.selectedPlanId = undefined;
+    // 6. Text message inside awaiting_info gathering
+    if (session.step === "awaiting_info" && text) {
+      // More relaxed email detection: contains @ and at least one dot after it
+      const isLikelyEmail = text.includes("@") && text.split("@")[1]?.includes(".");
+      
+      if (isLikelyEmail) {
+        session.email = text;
         await db.saveSession(session);
 
-        // Confirmation message to subscriber
-        let clientDoneMsg = `🎉 *تم طلب تفعيل الاشتراك بنجاح!*\n\n`;
-        clientDoneMsg += `📦 الباقة: *${ticket.planTitle}*\n`;
-        clientDoneMsg += `📩 بريدك: \`${ticket.email}\`\n\n`;
-        clientDoneMsg += `🔍 نقوم حالياً بمراجعة تحويلك وإيصال الدفع وسنقوم بالرد عليك برسالة تأكيد هنا في غضون دقائق قليلة! دمتم بصحة وعافية.`;
-
-        await callTelegram(botToken, "sendMessage", {
-          chat_id: chatId,
-          text: clientDoneMsg,
-          parse_mode: "Markdown"
-        }).catch((err) => console.error("Error sending subscription confirmation to user:", err));
-
-        // Forward to Admin Chat ID
-        const adminChatId = settings.adminChatId;
-        if (adminChatId && adminChatId.toString().trim() !== botId && !adminChatId.toString().trim().includes(":")) {
-          let adminAlertMsg = `🔔 *طلب اشتراك جديد قيد المراجعــة!*\n\n`;
-          adminAlertMsg += `👤 اسم العميل: *${fullName}*\n`;
-          adminAlertMsg += `🔗 المعرف: @${username}\n`;
-          adminAlertMsg += `✉️ بريد التفعيل: \`${ticket.email}\`\n`;
-          adminAlertMsg += `📦 الباقة المطلوبة: *${ticket.planTitle}*\n`;
-          adminAlertMsg += `🆔 تذكرة رقم: \`${ticketId}\`\n\n`;
-          adminAlertMsg += `👇 صورة التحويل مرفقة بالأسفل:`;
-
+        if (session.transactionImage) {
+          await completeTicket(text, session.transactionImage, session.selectedPlanId!);
+        } else {
           await callTelegram(botToken, "sendMessage", {
-            chat_id: adminChatId,
-            text: adminAlertMsg,
+            chat_id: chatId,
+            text: `✅ تم تسجيل البريد: \`${text}\`\n\nبانتظار إرسال *صورة الإيصال* لإتمام التفعيل. 📸`,
             parse_mode: "Markdown"
-          }).catch((err) => console.error("Error sending alert to adminChatId:", err));
-
-          // Forward the photo payload
-          await callTelegram(botToken, "sendPhoto", {
-            chat_id: adminChatId,
-            photo: fileId
-          }).catch((err) => console.error("Error forwarding receipt to adminChatId:", err));
+          });
         }
-      } else {
-        await callTelegram(botToken, "sendMessage", {
-          chat_id: chatId,
-          text: "💡 يرجى اختيار الباقة المطلوبة أولاً بالضغط عليها من الأزرار بالأسفل، ثم قم بإدخال بريدك لإتمام عملية إرسال الإيصال بشكل صحيح."
-        }).catch((err) => console.error("Error sending select plan suggestion:", err));
+        return;
+      } else if (text !== "البداية 🏠" && !text.startsWith("/")) {
+          // If they sent something that doesn't look like an email while we are waiting for info
+          await callTelegram(botToken, "sendMessage", {
+              chat_id: chatId,
+              text: "⚠️ يرجى إرسال بريدك الإلكتروني بشكل صحيح (مثال: example@gmail.com) أو إرسال صورة الإيصال لإتمام الطلب."
+          });
+          return;
       }
-      return;
     }
 
-    // Default response
-    await callTelegram(botToken, "sendMessage", {
-      chat_id: chatId,
-      text: "💡 الرجاء استخدام أزرار التحكم بالأسفل لاختيار إحدى باقات التفعيل أو التواصل مع الدعم الفني."
-    }).catch((err) => console.error("Error sending default greeting template:", err));
+    // 7. Photo message inside awaiting_info gathering
+    if (message.photo && message.photo.length > 0 && session.step === "awaiting_info") {
+        const photoObj = message.photo[message.photo.length - 1];
+        const fileId = photoObj.file_id;
+
+        const fileInfo = await callTelegram(botToken, "getFile", { file_id: fileId });
+        const filePath = fileInfo.result.file_path;
+        const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+        
+        const response = await fetch(downloadUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        const base64Image = `data:image/jpeg;base64,${Buffer.from(arrayBuffer).toString("base64")}`;
+
+        session.transactionImage = base64Image;
+        await db.saveSession(session);
+
+        if (session.email) {
+            // Complete flow!
+            await completeTicket(session.email, base64Image, session.selectedPlanId!);
+            
+            // Still forward the photo to admin if configured
+            const adminChatId = settings.adminChatId;
+            if (adminChatId) {
+                await callTelegram(botToken, "sendPhoto", {
+                    chat_id: adminChatId,
+                    photo: fileId
+                }).catch(() => {});
+            }
+        } else {
+            await callTelegram(botToken, "sendMessage", {
+                chat_id: chatId,
+                text: "✅ تم استلام صورة الإيصال.\n\nبانتظار إرسال *بريدك الإلكتروني* الآن لإتمام طلبك. ✉️",
+                parse_mode: "Markdown"
+            });
+        }
+        return;
+    }
+
+    // Default response if nothing else matched
+    if (text) {
+        await callTelegram(botToken, "sendMessage", {
+            chat_id: chatId,
+            text: "💡 الرجاء استخدام أزرار التحكم بالأسفل لاختيار باقة تفعيل أو التواصل مع الدعم الفني."
+        });
+    }
   }
 }
 
