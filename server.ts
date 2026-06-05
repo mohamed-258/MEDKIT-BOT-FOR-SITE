@@ -4,6 +4,7 @@ import fs from "fs";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import { DatabaseController, checkDatabaseStatus } from "./src/dbFallback";
 
 dotenv.config();
@@ -18,19 +19,25 @@ app.use(express.urlencoded({ extended: true, limit: "50mb" }));
 const configPath = path.join(process.cwd(), "firebase-applet-config.json");
 const firebaseConfig = JSON.parse(fs.readFileSync(configPath, "utf-8"));
 
+let adminApp: admin.app.App;
 if (!admin.apps.length) {
-  admin.initializeApp({
+  adminApp = admin.initializeApp({
     projectId: firebaseConfig.projectId,
   });
+} else {
+  adminApp = admin.app();
 }
 
-const firestore = admin.firestore();
-if (firebaseConfig.firestoreDatabaseId) {
-  firestore.settings({ databaseId: firebaseConfig.firestoreDatabaseId });
-}
+// Robust Firestore initialization for named databases
+const firestoreDatabaseId = firebaseConfig.firestoreDatabaseId || "(default)";
+console.log(`Initializing Firestore with Database ID: ${firestoreDatabaseId} in Project: ${firebaseConfig.projectId}`);
+
+const firestore = firebaseConfig.firestoreDatabaseId 
+  ? getFirestore(adminApp, firebaseConfig.firestoreDatabaseId)
+  : getFirestore(adminApp);
 
 // Instantiate database wrapper
-const db = new DatabaseController(firestore);
+const db = new DatabaseController(firestore as any);
 
 // --- Telegram Long Polling System ---
 let isPollingActive = false;
@@ -188,21 +195,21 @@ async function seedMenusIfEmpty() {
           title: "mid RRS",
           price: "300 جنيه مصري",
           description: "باقة كود التشخيص والمراجعة السريعة RRS (سنتين)",
-          details: "📍 باقة تفعيل كود منصة ميدكيت الطبية RRS:\n\nتشمل باقة التفعيل الميزات التالية:\n🟢 صلاحية كاملة لمدة سنتين كاملتين (24 شهراً).\n🟢 الوصول السريع إلى تشخيص الحالات والدعم اللا محدود.\n🟢 كود مراجعة مخصص.\n\n💰 قيمة الاشتراك: 300 جنيه مصري فقط."
+          details: "📍 باقة تفعيل كود منصة ميدكيت RRS:\n\nتشمل باقة التفعيل الميزات التالية:\n🟢 صلاحية كاملة لمدة سنتين كاملتين (24 شهراً).\n🟢 الوصول السريع إلى تشخيص الحالات والدعم اللا محدود.\n🟢 كود مراجعة مخصص.\n\n💰 قيمة الاشتراك: 300 جنيه مصري فقط."
         },
         {
           id: "mid_ecg",
           title: "mid ECG",
           price: "200 جنيه مصري",
           description: "باقة كورس رسم القلب واشتراك 12 شهر",
-          details: "📍 باقة التفعيل لكورس رسم القلب الشامل mid ECG:\n\nتشمل الباقة الميزات التالية:\n🟢 كورس رسم القلب الشامل لجميع المستويات.\n🟢 صلاحية وصول للمواد الطبية لمدة 12 شهر.\n🟢 شهادة إتمام رقمية مجانية للطلاب والممارسين.\n\n💰 قيمة الاشتراك: 200 جنيه مصري فقط."
+          details: "📍 باقة التفعيل لكورس رسم القلب الشامل mid ECG:\n\nتشمل الباقة الميزات التالية:\n🟢 كورس رسم القلب الشامل لجميع المستويات.\n🟢 صلاحية وصول للمواد لمدة 12 شهر.\n🟢 شهادة إتمام رقمية مجانية للطلاب والممارسين.\n\n💰 قيمة الاشتراك: 200 جنيه مصري فقط."
         },
         {
           id: "mid_premium",
           title: "mid Premium الشامل",
           price: "500 جنيه مصري",
           description: "الاشتراك المميز لكافة كورسات وخدمات منصة ميدكيت",
-          details: "📍 باقة التفعيل الشاملة mid Premium:\n\nتشمل هذه الباقة الحصرية الميزات التالية:\n🟢 الوصول لكافة الكورسات الطبية المتاحة بالمنصة والمستقبلية.\n🟢 تفعيل كود RRS وكورس ECG مدى الحياة.\n🟢 دعم طبي واستشارات فنية VIP.\n\n💰 قيمة الاشتراك: 500 جنيه مصري فقط."
+          details: "📍 باقة التفعيل الشاملة mid Premium:\n\nتشمل هذه الباقة الحصرية الميزات التالية:\n🟢 الوصول لكافة الكورسات المتاحة بالمنصة والمستقبلية.\n🟢 تفعيل كود RRS وكورس ECG مدى الحياة.\n🟢 دعم طبي واستشارات فنية VIP.\n\n💰 قيمة الاشتراك: 500 جنيه مصري فقط."
         }
       ];
 
@@ -237,12 +244,13 @@ async function seedMenusIfEmpty() {
 async function seedSettingsIfEmpty() {
   try {
     const settings = await db.getSettings();
-    if (!settings || !settings.welcomeMessage) {
+    if (!settings || !settings.botToken || !settings.welcomeMessage) {
       console.log("Seeding default medkit settings...");
       await db.saveSettings({
         botToken: "",
         adminChatId: "",
-        welcomeMessage: "أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت (MedKit) المعتمد! 🏥✨\n\nيرجى تحديد خطة الاشتراك المراد تفعيلها من القائمة بالأسفل لعرض تفاصيلها وطريقة التحويل وسنقوم بتفعيل حسابك فوراً:"
+        welcomeMessage: "أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت (MedKit) المعتمد! 🏥✨\n\nيرجى تحديد خطة الاشتراك المراد تفعيلها من القائمة بالأسفل لعرض تفاصيلها وطريقة التحويل وسنقوم بتفعيل حسابك فوراً:",
+        allowedEmails: ["mhsn68503@gmail.com"]
       });
     }
   } catch (error) {
@@ -404,7 +412,7 @@ app.post("/api/admin/reply", async (req, res) => {
         textMessage += `الإيميل المسجل: \`${ticket.email}\`\n\n`;
         textMessage += `📌 *قرار الإدارة:* ${statusIcon} ${statusTxt}\n\n`;
         textMessage += `💬 *ملاحظة الإدارة:*\n${replyMessage}\n\n`;
-        textMessage += `شكراً لاختيارك منصة ميدكيت الطبية! ❤️`;
+        textMessage += `شكراً لاختيارك منصة ميدكيت! ❤️`;
 
         await callTelegram(botToken, "sendMessage", {
           chat_id: ticket.telegramUserId,
@@ -621,7 +629,7 @@ async function processTelegramUpdate(update: any) {
       const ticketId = "tick_" + Math.random().toString(36).substring(2, 11);
       const menusList = await db.getMenus();
       const selectedPlan = menusList.find(m => m.id === planId);
-      const planTitle = selectedPlan ? selectedPlan.title : "باقة تفعيل ميدكيت";
+      const menuTitle = selectedPlan ? selectedPlan.title : "باقة تفعيل ميدكيت";
 
       const ticket = {
         id: ticketId,
@@ -632,8 +640,8 @@ async function processTelegramUpdate(update: any) {
         username: username,
         fullName: fullName,
         email: finalEmail,
-        planId: planId,
-        planTitle: planTitle,
+        menuId: planId,
+        menuTitle: menuTitle,
         receiptPhotoUrl: finalImage,
         transactionImage: finalImage,
         status: "new",
@@ -653,7 +661,7 @@ async function processTelegramUpdate(update: any) {
 
       // Confirmation to user
       let clientDoneMsg = `🎉 *تم طلب تفعيل الاشتراك بنجاح!*\n\n`;
-      clientDoneMsg += `📦 الباقة: *${planTitle}*\n`;
+      clientDoneMsg += `📦 الباقة: *${menuTitle}*\n`;
       clientDoneMsg += `📩 بريدك: \`${finalEmail}\`\n\n`;
       clientDoneMsg += `🔍 نقوم حالياً بمراجعة تحويلك وسنقوم بالرد عليك برسالة تأكيد هنا فوراً بعد التدقيق. شكراً لك! ❤️`;
 
@@ -669,7 +677,7 @@ async function processTelegramUpdate(update: any) {
         let adminAlertMsg = `🔔 *طلب اشتراك جديد قيد المراجعــة!*\n\n`;
         adminAlertMsg += `👤 العميل: *${fullName}* (@${username})\n`;
         adminAlertMsg += `✉️ البريد: \`${finalEmail}\`\n`;
-        adminAlertMsg += `📦 الباقة: *${planTitle}*\n`;
+        adminAlertMsg += `📦 الباقة: *${menuTitle}*\n`;
         adminAlertMsg += `🆔 التذكرة: \`${ticketId}\`\n\n`;
         adminAlertMsg += `👇 الإيصال مرفق:`;
 
@@ -732,7 +740,7 @@ async function processTelegramUpdate(update: any) {
       } else {
         const pStatus = translateStatus(userTicket.status);
         let statusMsg = `ℹ️ *حالة طلبك الأخير:*\n\n`;
-        statusMsg += ` الباقة: *${userTicket.planTitle}*\n`;
+        statusMsg += ` الباقة: *${userTicket.menuTitle}*\n`;
         statusMsg += ` البريد: \`${userTicket.email}\`\n`;
         statusMsg += ` الحالة: *${pStatus}*\n\n`;
         if (userTicket.adminComment) statusMsg += `💬 *رد الإدارة:* ${userTicket.adminComment}\n`;
@@ -757,7 +765,31 @@ async function processTelegramUpdate(update: any) {
       return;
     }
 
-    // 4. Support state handling
+    // 4. Subscription Plan Selection (PRIORITY CHECK)
+    const menusList = await db.getMenus();
+    const matchedMenu = menusList.find(m => m.title.trim().toLowerCase() === text.toLowerCase());
+    if (matchedMenu) {
+      session.step = "awaiting_info";
+      session.selectedPlanId = matchedMenu.id;
+      session.email = undefined;
+      session.transactionImage = undefined;
+      await db.saveSession(session);
+
+      let instr = `${matchedMenu.details}\n\n`;
+      instr += "💡 *يرجى إرسال الآتي لإتمام الطلب:*\n";
+      instr += "1️⃣ بريدك الإلكتروني المسجل بالمنصة.\n";
+      instr += "2️⃣ صورة إيصال التحويل (وودافون كاش أو غيره).\n\n";
+      instr += "*(يمكنك إرسال أي منهما أولاً، وسننتظر الآخر لإتمام الطلب)*";
+
+      await callTelegram(botToken, "sendMessage", {
+        chat_id: chatId,
+        text: instr,
+        parse_mode: "Markdown"
+      });
+      return;
+    }
+
+    // 5. Support state handling
     if (session.step === "support" && text && text !== "البداية 🏠") {
       try {
         const msgId = "msg_" + Math.random().toString(36).substring(2, 11);
@@ -784,30 +816,6 @@ async function processTelegramUpdate(update: any) {
       await callTelegram(botToken, "sendMessage", {
         chat_id: chatId,
         text: "✅ تم استلام رسالتك. سيتم الرد عليك قريباً."
-      });
-      return;
-    }
-
-    // 5. Subscription Plan Selection
-    const menusList = await db.getMenus();
-    const matchedMenu = menusList.find(m => m.title.trim().toLowerCase() === text.toLowerCase());
-    if (matchedMenu) {
-      session.step = "awaiting_info";
-      session.selectedPlanId = matchedMenu.id;
-      session.email = undefined;
-      session.transactionImage = undefined;
-      await db.saveSession(session);
-
-      let instr = `${matchedMenu.details}\n\n`;
-      instr += "💡 *يرجى إرسال الآتي لإتمام الطلب:*\n";
-      instr += "1️⃣ بريدك الإلكتروني المسجل بالمنصة.\n";
-      instr += "2️⃣ صورة إيصال التحويل (وودافون كاش أو غيره).\n\n";
-      instr += "*(يمكنك إرسال أي منهما أولاً، وسننتظر الآخر لإتمام الطلب)*";
-
-      await callTelegram(botToken, "sendMessage", {
-        chat_id: chatId,
-        text: instr,
-        parse_mode: "Markdown"
       });
       return;
     }

@@ -1,46 +1,61 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Check if the user is the authorized admin email or UID
-    function isAdmin() {
-      return request.auth != null && (
-        request.auth.uid == "ZKWHNUcRBqRZlfMr3PIleuyntP62" ||
-        request.auth.token.email == "mhsn68503@gmail.com" ||
-        (exists(/databases/$(database)/documents/settings/global) && 
-         "allowedEmails" in get(/databases/$(database)/documents/settings/global).data &&
-         request.auth.token.email in get(/databases/$(database)/documents/settings/global).data.allowedEmails)
-      );
-    }
-
-    // Allow read/write on all collections only to verified admin
-    match /settings/{settingId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    match /menus/{menuId} {
-      allow read: if true;
-      allow write: if isAdmin();
-    }
-
-    match /tickets/{ticketId} {
-      allow create: if true;
-      allow read, update, delete: if isAdmin();
-    }
-
-    match /support_messages/{messageId} {
-      allow create: if true;
-      allow read, update, delete: if isAdmin();
-    }
-
-    match /sessions/{userId} {
-      allow read, write: if true;
-    }
-
-    // Global Safety Net at the bottom
+    // 1. Catch-all deny
     match /{document=**} {
       allow read, write: if false;
+    }
+
+    // helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Securely check if user email is in the allowed list inside the 'settings/global' document
+    function isAdmin() {
+      let email = request.auth.token.email;
+      let isPrimary = isEmailVerified() && email == "mhsn68503@gmail.com";
+      // Allow primary admin direct access, or check allowedEmails list
+      return isPrimary || (isEmailVerified() && 
+             exists(/databases/$(database)/documents/settings/global) && 
+             request.auth.token.email in get(/databases/$(database)/documents/settings/global).data.get('allowedEmails', []));
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // 2. Settings collection
+    match /settings/{id} {
+      // Allow reading settings for verification if signed in
+      allow read: if isEmailVerified();
+      // Only admins can write
+      allow write: if isAdmin();
+    }
+
+    // 3. Menus collection
+    match /menus/{id} {
+      allow read: if isEmailVerified();
+      allow write: if isAdmin();
+    }
+
+    // 4. Tickets collection
+    match /tickets/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // 5. Sessions collection
+    match /sessions/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // 6. Support Messages collection
+    match /support_messages/{id} {
+      allow read, write: if isAdmin();
     }
   }
 }
