@@ -182,12 +182,15 @@ async function poll(botToken: string, executionId: string) {
     } else {
       const data = await response.json();
       if (data.ok && data.result && data.result.length > 0) {
-        for (const update of data.result) {
+        // Process updates in parallel for better response time
+        await Promise.all(data.result.map(async (update: any) => {
           lastOffset = Math.max(lastOffset, update.update_id);
-          await processTelegramUpdate(update).catch((err: any) => {
-            console.error(`[Polling:${executionId}] Error processing update:`, err);
-          });
-        }
+          try {
+            await processTelegramUpdate(update);
+          } catch (err: any) {
+            console.error(`[Polling:${executionId}] Error processing update ${update.update_id}:`, err);
+          }
+        }));
       }
     }
   } catch (err: any) {
@@ -306,8 +309,8 @@ async function seedSettingsIfEmpty() {
     if (!settings || !settings.botToken || !settings.welcomeMessage) {
       console.log("Seeding default medkit settings...");
       await db.saveSettings({
-        botToken: "",
-        adminChatId: "",
+        botToken: "8974609042:AAHWOSlmsLQeerqi-neMeFm9iyu0m9uwOdg",
+        adminChatId: "895138224",
         welcomeMessage: "أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت (MedKit) المعتمد! 🏥✨\n\nيرجى تحديد خطة الاشتراك المراد تفعيلها من القائمة بالأسفل لعرض تفاصيلها وطريقة التحويل وسنقوم بتفعيل حسابك فوراً:",
         allowedEmails: ["mhsn68503@gmail.com"]
       });
@@ -319,6 +322,20 @@ async function seedSettingsIfEmpty() {
 
 // Initialize database setup (will dynamically choose Firestore vs local fallback)
 async function initDatabase() {
+  const isProd = isProductionEnvironment();
+  
+  // Register this instance
+  db.registerInstance(INSTANCE_ID, {
+    url: isProd ? "https://ais-pre-4kvme67znt7t7krxejpyoe-51222879362.europe-west2.run.app" : "Local Dev",
+    isProduction: isProd,
+    bootAt: new Date().toISOString()
+  });
+
+  // Heartbeat every 2 minutes
+  setInterval(() => {
+    db.registerInstance(INSTANCE_ID, { lastUpdate: new Date().toISOString() });
+  }, 120000);
+
   await checkDatabaseStatus(firestore);
 
   // Clear trial/demo menus programmatically as requested by user
@@ -345,6 +362,20 @@ async function initDatabase() {
 
   await seedMenusIfEmpty();
   await seedSettingsIfEmpty();
+
+  // Force adminChatId to 895138224 as explicitly requested by the user for local and published
+  try {
+    const currentSettings = await db.getSettings().catch(() => null);
+    if (currentSettings && currentSettings.adminChatId !== "895138224") {
+      console.log("Applying manual override for adminChatId to 895138224");
+      await db.saveSettings({
+        ...currentSettings,
+        adminChatId: "895138224"
+      });
+    }
+  } catch (err) {
+    console.error("Error forcing adminChatId update:", err);
+  }
 
   // Start Long Polling or Webhook if token is available
   const settings = await db.getSettings().catch(() => null);
@@ -420,7 +451,11 @@ app.get("/api/telegram-status", async (req, res) => {
       botUser: botInfo ? botInfo.result : null,
       webhookInfo: hookData.ok ? hookData.result : { url: "", error: hookData.error },
       isPollingActive,
-      devPollingEnabled: settings.devPollingEnabled !== false
+      devPollingEnabled: settings.devPollingEnabled !== false,
+      instanceId: INSTANCE_ID,
+      masterInstanceId: settings.masterInstanceId,
+      activeInstances: await db.getActiveInstances(),
+      isProduction: isProductionEnvironment(req)
     });
   } catch (err: any) {
     console.error("API Status Error:", err);
@@ -431,9 +466,16 @@ app.get("/api/telegram-status", async (req, res) => {
 // New polling toggle
 app.post("/api/polling/toggle", async (req, res) => {
   try {
-    const { enabled } = req.body;
+    const { enabled, claimMaster } = req.body;
     const settings = await db.getSettings();
-    await db.saveSettings({ ...settings, devPollingEnabled: enabled });
+    
+    const update: any = { ...settings, devPollingEnabled: enabled };
+    if (claimMaster) {
+      update.masterInstanceId = INSTANCE_ID;
+      console.log(`[API] Instance ${INSTANCE_ID} claiming MASTER status.`);
+    }
+
+    await db.saveSettings(update);
     
     if (enabled) {
       console.log(`[API] Enabling polling on request.`);
@@ -713,6 +755,17 @@ app.post("/api/telegram-webhook", async (req, res) => {
 // Refactored helper to process updates from both Webhook & Long Polling
 async function processTelegramUpdate(update: any) {
   if (!update || (!update.message && !update.callback_query)) return;
+  const settings = await db.getSettings();
+  
+  // --- STRATEGY: Master Instance Check ---
+  // If a master instance is defined, only THAT instance processes updates.
+  // Exception: If the master has been offline for long, or none set (legacy behavior).
+  if (settings.masterInstanceId && settings.masterInstanceId !== INSTANCE_ID) {
+    // Optional: Check if master is still alive via registry check? 
+    // For now, respect the setting strictly to avoid duplication.
+    console.log(`[${INSTANCE_ID}] 🤐 Instance is SLAVE. Master is ${settings.masterInstanceId}. Skipping update ${update.update_id}.`);
+    return;
+  }
 
   // Use update_id to deduplicate and ensure only one instance processes this update
   const isNew = await db.claimUpdate(update.update_id, INSTANCE_ID);
@@ -721,7 +774,6 @@ async function processTelegramUpdate(update: any) {
     return;
   }
 
-  const settings = await db.getSettings();
   const botToken = settings.botToken;
   if (!botToken) return;
 
@@ -943,7 +995,7 @@ async function processTelegramUpdate(update: any) {
         });
         
         const adminChatId = settings.adminChatId;
-        if (adminChatId) {
+        if (adminChatId && adminChatId.toString().trim() !== botId && !adminChatId.toString().trim().includes(":")) {
             await callTelegram(botToken, "sendMessage", {
                 chat_id: adminChatId,
                 text: `🚨 *رسالة دعم جديدة:*\n👤 ${fullName}\n✉️ ${text}`,
@@ -1021,7 +1073,7 @@ async function processTelegramUpdate(update: any) {
             
             // Still forward the photo to admin if configured
             const adminChatId = settings.adminChatId;
-            if (adminChatId) {
+            if (adminChatId && adminChatId.toString().trim() !== botId && !adminChatId.toString().trim().includes(":")) {
                 await callTelegram(botToken, "sendPhoto", {
                     chat_id: adminChatId,
                     photo: fileId

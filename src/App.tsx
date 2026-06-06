@@ -581,12 +581,12 @@ export default function App() {
   };
 
   // Toggle Polling
-  const handleTogglePolling = async (enabled: boolean) => {
+  const handleTogglePolling = async (enabled: boolean, claimMaster: boolean = false) => {
     try {
       const res = await fetch("/api/polling/toggle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled })
+        body: JSON.stringify({ enabled, claimMaster })
       });
       if (res.ok) {
         fetchTelegramWebhookStatus();
@@ -2000,28 +2000,78 @@ export default function App() {
                     
                     {/* Local Preview Control */}
                     <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
-                      <h3 className="text-sm font-bold text-white uppercase tracking-wider">التحكم في المعاينة (Local Preview) 🔍</h3>
-                      <div className="p-4 bg-slate-950 border border-white/5 rounded-xl space-y-3.5 text-right">
-                        <div className="flex items-center justify-between flex-row-reverse">
-                          <span className="text-slate-300 font-bold text-[11px]">حالة استجابة المعاينة:</span>
-                          <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${webhookStatus?.isPollingActive ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
-                            {webhookStatus?.isPollingActive ? "Active" : "Stopped"}
-                          </span>
+                      <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center justify-between">
+                        التحكم في المعاينة والمزامنة 🔍
+                        <span className="text-[10px] text-slate-400 font-normal bg-white/5 px-2 py-0.5 rounded-lg">ID: {webhookStatus?.instanceId}</span>
+                      </h3>
+                      
+                      <div className="p-4 bg-slate-950 border border-white/5 rounded-xl space-y-4 text-right">
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between flex-row-reverse">
+                            <span className="text-slate-300 font-bold text-[11px]">حالة استجابة المعاينة:</span>
+                            <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${webhookStatus?.isPollingActive ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
+                              {webhookStatus?.isPollingActive ? "Active" : "Stopped"}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between flex-row-reverse">
+                            <span className="text-slate-300 font-bold text-[11px]">المنصب الحالي:</span>
+                            <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${webhookStatus?.masterInstanceId === webhookStatus?.instanceId ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/20" : "bg-slate-800 text-slate-400"}`}>
+                              {webhookStatus?.masterInstanceId === webhookStatus?.instanceId ? "MASTER" : "SLAVE"}
+                            </span>
+                          </div>
                         </div>
-                        <p className="text-[10px] text-slate-500 leading-relaxed">
-                          استخدم هذا الزر لتعطيل استجابة المعاينة الحالية (التي تشاهدها الآن) لمنع تداخل الردود مع النسخة المنشورة.
+
+                        <p className="text-[10px] text-slate-500 leading-relaxed border-t border-white/5 pt-3">
+                          لربط المعاينة (Local) بالنسخة المنشورة ومنع تكرار الرسائل، اجعل إحدى النسخ فقط هي الـ "Master".
+                          النسخة المنشورة (ais-pre) هي النسخة الرسمية للمحتوى.
                         </p>
-                        <button
-                          type="button"
-                          onClick={() => handleTogglePolling(webhookStatus?.devPollingEnabled === false)}
-                          className={`w-full py-2.5 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
-                            webhookStatus?.devPollingEnabled !== false 
-                              ? "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/15" 
-                              : "bg-cyan-500 text-slate-950 hover:bg-cyan-400"
-                          }`}
-                        >
-                          {webhookStatus?.devPollingEnabled !== false ? "إيقاف استجابة المعاينة ⛔" : "تشغيل استجابة المعاينة ▶️"}
-                        </button>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePolling(webhookStatus?.devPollingEnabled === false)}
+                            className={`py-2.5 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
+                              webhookStatus?.devPollingEnabled !== false 
+                                ? "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/15" 
+                                : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+                            }`}
+                          >
+                            {webhookStatus?.devPollingEnabled !== false ? "إيقاف الاستجابة ⛔" : "تشغيل الاستجابة ▶️"}
+                          </button>
+                          
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePolling(true, true)}
+                            className={`py-2.5 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
+                              webhookStatus?.masterInstanceId === webhookStatus?.instanceId 
+                                ? "bg-emerald-500/10 text-emerald-400 cursor-default opacity-50" 
+                                : "bg-cyan-500 text-slate-950 hover:bg-cyan-400"
+                            }`}
+                            disabled={webhookStatus?.masterInstanceId === webhookStatus?.instanceId}
+                          >
+                            {webhookStatus?.masterInstanceId === webhookStatus?.instanceId ? "أنت المسيطر حالياً ✅" : "اجعله الاستجابة الوحيدة ⭐"}
+                          </button>
+                        </div>
+                        
+                        {/* Instance Registry List */}
+                        {webhookStatus?.activeInstances?.length > 1 && (
+                          <div className="mt-4 pt-4 border-t border-white/5 space-y-2">
+                            <h4 className="text-[9px] text-slate-400 font-bold uppercase">النسخ النشطة حالياً:</h4>
+                            <div className="space-y-1.5">
+                              {webhookStatus.activeInstances.map((inst: any) => (
+                                <div key={inst.id} className="flex items-center justify-between flex-row-reverse bg-white/5 px-2 py-1.5 rounded-lg">
+                                  <div className="flex items-center gap-2 flex-row-reverse">
+                                    <span className={`w-1.5 h-1.5 rounded-full ${Date.now() - inst.lastSeen < 60000 ? "bg-emerald-500" : "bg-amber-500"}`}></span>
+                                    <span className="text-[9px] text-slate-300 truncate max-w-[120px]">{inst.url || inst.id} {inst.id === webhookStatus.instanceId && "(أنت)"}</span>
+                                  </div>
+                                  <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${inst.id === webhookStatus.masterInstanceId ? "bg-cyan-500/20 text-cyan-400" : "bg-slate-700 text-slate-500"}`}>
+                                    {inst.id === webhookStatus.masterInstanceId ? "MASTER" : "SLAVE"}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
 

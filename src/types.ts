@@ -5,6 +5,8 @@ export interface Setting {
   seededMenus?: boolean;
   allowedEmails?: string[]; // list of emails authorized to access the dashboard
   devPollingEnabled?: boolean; // toggle for local development polling
+  activeInstanceUrl?: string; // The URL of the instance allowed to respond to Telegram
+  masterInstanceId?: string; // The ID of the instance allowed to process Telegram updates
 }
 
 export interface SupportMessage {

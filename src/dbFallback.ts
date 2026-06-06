@@ -11,6 +11,8 @@ interface Setting {
   seededMenus?: boolean;
   allowedEmails?: string[];
   devPollingEnabled?: boolean;
+  activeInstanceUrl?: string; // The URL of the instance allowed to respond to Telegram
+  masterInstanceId?: string; // The ID of the instance allowed to process Telegram updates
 }
 
 interface Menu {
@@ -74,10 +76,10 @@ interface LocalDB {
 const DEFAULT_DB: LocalDB = {
   settings: {
     global: {
-      botToken: "",
-      adminChatId: "",
+      botToken: "8974609042:AAHWOSlmsLQeerqi-neMeFm9iyu0m9uwOdg",
+      adminChatId: "895138224",
       welcomeMessage: "أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت (MedKit) المعتمد! 🏥✨\n\nيرجى تحديد خطة الاشتراك المراد تفعيلها من القائمة بالأسفل لعرض تفاصيلها وطريقة التحويل وسنقوم بتفعيل حسابك فوراً:",
-      allowedEmails: []
+      allowedEmails: ["mhsn68503@gmail.com"]
     }
   },
   menus: {
@@ -108,21 +110,30 @@ const DEFAULT_DB: LocalDB = {
   supportMessages: {}
 };
 
+// In-memory cache for performance
+let cachedLocalDB: LocalDB | null = null;
+let cachedSettings: Setting | null = null;
+let settingsCacheExpiry = 0;
+
 // Read JSON DB
 function readLocalDB(): LocalDB {
+  if (cachedLocalDB) return cachedLocalDB;
   try {
     if (fs.existsSync(LOCAL_DB_PATH)) {
       const data = fs.readFileSync(LOCAL_DB_PATH, "utf-8");
-      return { ...DEFAULT_DB, ...JSON.parse(data) };
+      cachedLocalDB = { ...DEFAULT_DB, ...JSON.parse(data) };
+      return cachedLocalDB!;
     }
   } catch (error) {
     console.error("Failed to read local DB, fallback to default:", error);
   }
-  return DEFAULT_DB;
+  cachedLocalDB = { ...DEFAULT_DB };
+  return cachedLocalDB;
 }
 
 // Write JSON DB
 function writeLocalDB(db: LocalDB) {
+  cachedLocalDB = db; // Sync cache
   try {
     fs.writeFileSync(LOCAL_DB_PATH, JSON.stringify(db, null, 2), "utf-8");
   } catch (error) {
@@ -135,18 +146,33 @@ let firestoreWorking = true;
 
 export async function checkDatabaseStatus(firestoreInstance: admin.firestore.Firestore): Promise<boolean> {
   try {
-    // Try to get setting/global with a slightly longer timeout for cloud cold starts
+    // Try to get setting/global with a longer timeout
     const testPromise = firestoreInstance.collection("settings").doc("global").get();
-    const timeoutPromise = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Firestore check timed out")), 5000));
+    const timeoutPromise = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Firestore check timed out")), 15000));
     const snap = await Promise.race([testPromise, timeoutPromise]);
-    firestoreWorking = snap.exists || !snap.exists; // operational if we got a response back
+    firestoreWorking = true; // operational if we got a response back
     console.log(`Database Link: FIRESTORE ACTIVE (operational=${firestoreWorking})`);
   } catch (err: any) {
-    console.error("Database Link: FIRESTORE RESTRICTED (using local JSON storage layer). Error:", err.message);
-    firestoreWorking = false;
+    console.error("Database Link: FIRESTORE CHECK ERROR:", err.message);
+    if (err.message === "Firestore check timed out") {
+      console.log("Will assume Firestore is working but slow.");
+      firestoreWorking = true;
+    } else if (err.code && (err.code === 7 || err.code === 16 || String(err.code).includes("PERMISSION_DENIED") || String(err.code).includes("UNAUTHENTICATED"))) {
+      console.log("Database Link: FIRESTORE RESTRICTED (using local JSON storage layer).");
+      firestoreWorking = false;
+    } else {
+      console.log("Assuming Firestore is working after catching unknown error:", err.message);
+      firestoreWorking = true;
+    }
   }
   return firestoreWorking;
 }
+
+// Cache for claimed updates to avoid repeated LocalDB parsing
+const claimedUpdatesCache = new Set<string>();
+
+// Cache for user sessions to speed up rapid interactions
+const sessionCache = new Map<string, { data: Session, expiry: number }>();
 
 // Expose Methods with Auto Fallback
 export class DatabaseController {
@@ -158,27 +184,41 @@ export class DatabaseController {
 
   // settings/global
   async getSettings(): Promise<Setting> {
+    const now = Date.now();
+    if (cachedSettings && now < settingsCacheExpiry) {
+      return cachedSettings;
+    }
+
     if (!firestoreWorking) {
-      console.log("Database Fallback: Loading settings from LOCAL DB");
-      return readLocalDB().settings.global || DEFAULT_DB.settings.global;
+      const settings = readLocalDB().settings.global || DEFAULT_DB.settings.global;
+      cachedSettings = settings;
+      settingsCacheExpiry = now + 60000; // Cache local for 60s
+      return settings;
     }
 
     try {
-      console.log("Firestore: Fetching settings/global...");
       const snap = await this.fsDb.collection("settings").doc("global").get();
       if (snap.exists) {
-        return snap.data() as Setting;
+        const settings = snap.data() as Setting;
+        cachedSettings = settings;
+        settingsCacheExpiry = now + 30000; // Cache Firestore for 30s
+        return settings;
       }
-      console.log("Firestore: settings/global document does not exist.");
     } catch (err: any) {
       console.error("Firestore getSettings failed. Error:", err.message);
-      // Extra safety fallback on error
-      return readLocalDB().settings.global || DEFAULT_DB.settings.global;
+      const settings = readLocalDB().settings.global || DEFAULT_DB.settings.global;
+      cachedSettings = settings;
+      settingsCacheExpiry = now + 10000; // Error fallback cache
+      return settings;
     }
     return DEFAULT_DB.settings.global;
   }
 
   async saveSettings(settings: Setting): Promise<void> {
+    // Invalidate/Update cache
+    cachedSettings = settings;
+    settingsCacheExpiry = Date.now() + 60000;
+
     // Save to local for fallback
     const db = readLocalDB();
     db.settings.global = settings;
@@ -321,23 +361,38 @@ export class DatabaseController {
 
   // sessions (Telegram bot session tracking)
   async getSession(userId: string): Promise<Session> {
+    const now = Date.now();
+    const cached = sessionCache.get(userId);
+    if (cached && now < cached.expiry) {
+      return cached.data;
+    }
+
     if (!firestoreWorking) {
-      return readLocalDB().sessions[userId] || { userId, step: "idle" };
+      const session = readLocalDB().sessions[userId] || { userId, step: "idle" };
+      sessionCache.set(userId, { data: session, expiry: now + 30000 });
+      return session;
     }
 
     try {
       const snap = await this.fsDb.collection("sessions").doc(userId).get();
       if (snap.exists) {
-        return { userId, ...snap.data() } as Session;
+        const session = { userId, ...snap.data() } as Session;
+        sessionCache.set(userId, { data: session, expiry: now + 15000 }); // 15s cache
+        return session;
       }
     } catch (err: any) {
       console.error("Firestore getSession failed:", err.message);
-      return readLocalDB().sessions[userId] || { userId, step: "idle" };
+      const session = readLocalDB().sessions[userId] || { userId, step: "idle" };
+      sessionCache.set(userId, { data: session, expiry: now + 5000 });
+      return session;
     }
     return { userId, step: "idle" };
   }
 
   async saveSession(session: Session): Promise<void> {
+    // Sync cache
+    sessionCache.set(session.userId, { data: session, expiry: Date.now() + 15000 });
+
     const db = readLocalDB();
     db.sessions[session.userId] = session;
     writeLocalDB(db);
@@ -417,53 +472,59 @@ export class DatabaseController {
     if (!updateId) return true;
     const id = updateId.toString();
 
-    // 1. Local Memory/JSON check first
+    // 1. Instant memory cache check
+    if (claimedUpdatesCache.has(id)) {
+      return false;
+    }
+
+    // 2. Local fallback check (to persist across restarts)
     const db = readLocalDB();
     if (!(db as any).processedUpdates) (db as any).processedUpdates = {};
     const localMap = (db as any).processedUpdates;
 
     if (localMap[id]) {
-      console.log(`[${instanceId || "DB"}] Update ${id} already processed (LOCAL).`);
+      claimedUpdatesCache.add(id);
       return false;
     }
 
     // Mark as processed locally
     localMap[id] = true;
-    // Keep internal history clean (last 1000)
+    claimedUpdatesCache.add(id);
+
+    // Keep memory cache and disk history clean
+    if (claimedUpdatesCache.size > 2000) {
+       // Just clear it, we don't need infinite history in memory
+       claimedUpdatesCache.clear();
+       claimedUpdatesCache.add(id);
+    }
+
     if (Object.keys(localMap).length > 2000) {
       const keys = Object.keys(localMap).sort();
       const newMap: Record<string, boolean> = {};
       keys.slice(-1000).forEach(k => newMap[k] = true);
       (db as any).processedUpdates = newMap;
     }
+    
+    // We only write to disk if it's a NEW update we haven't seen before
     writeLocalDB(db);
 
-    // 2. Global Sync (Firestore)
+    // 3. Global Sync (Firestore)
     if (!firestoreWorking) {
-      // If Firestore is down, we must rely solely on local state.
-      // In multiple-instance scenarios, this avoids duplication ONLY IF they share the same disk.
-      // Since they don't, we return TRUE but acknowledge the risk.
-      console.log(`[${instanceId || "DB"}] Firestore not working, returning TRUE for update ${id} (Bypassed sync).`);
       return true;
     }
 
     try {
-      // Use doc().create() which fails if the document already exists (atomic claim)
       await this.fsDb.collection("processed_updates").doc(id).create({ 
         createdAt: new Date().toISOString(),
         instanceId: instanceId || "unknown",
-        claimedAt: admin.firestore.FieldValue.serverTimestamp()
+        claimedAt: admin.firestore.FieldValue.serverTimestamp(),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
       });
-      console.log(`[${instanceId || "DB"}] Successfully CLAIMED update ${id} in Firestore.`);
       return true;
     } catch (err: any) {
-      // Error code 6 is "ALREADY_EXISTS"
       if (err.code === 6 || (err.message && err.message.toLowerCase().includes("already exists"))) {
-        console.log(`[${instanceId || "DB"}] Update ${id} already claimed in Firestore by another instance.`);
         return false;
       }
-      console.log(`[${instanceId || "DB"}] Firestore error claiming update ${id}:`, err.message);
-      // On unknown errors, we'd rather risk a duplicate than a lost message
       return true; 
     }
   }
@@ -511,6 +572,32 @@ export class DatabaseController {
         await lockRef.delete();
       }
     } catch (err) {}
+  }
+
+  /**
+   * Heartbeat for this specific instance to register itself in the global registry.
+   */
+  async registerInstance(instanceId: string, metadata: any): Promise<void> {
+    if (!firestoreWorking) return;
+    try {
+      await this.fsDb.collection("instances").doc(instanceId).set({
+        ...metadata,
+        lastSeen: Date.now(),
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (err) {}
+  }
+
+  async getActiveInstances(): Promise<any[]> {
+    if (!firestoreWorking) return [];
+    try {
+      const snap = await this.fsDb.collection("instances").where("lastSeen", ">", Date.now() - 300000).get(); // 5 min freshness
+      const list: any[] = [];
+      snap.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+      return list;
+    } catch (err) {
+      return [];
+    }
   }
 
 }
