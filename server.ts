@@ -56,7 +56,11 @@ function isProductionEnvironment(req?: express.Request): boolean {
     return true;
   }
   
-  // 2. Platform environment variables
+  // 2. Priority check for AI Studio unique environment indicators
+  const appUrl = (process.env.APP_URL || "");
+  if (appUrl.includes("ais-pre-")) return true;
+
+  // 3. Platform environment variables
   if (process.env.NODE_ENV === "production") return true;
 
   return false;
@@ -70,7 +74,8 @@ async function startTelegramPolling() {
 
   // Set active immediately to prevent race conditions during async settings fetch
   isPollingActive = true;
-  console.log(`Starting Telegram Long Polling initialization (Instance:${INSTANCE_ID})...`);
+  const isProd = isProductionEnvironment();
+  console.log(`Starting Telegram Long Polling initialization (Instance:${INSTANCE_ID}, isProd:${isProd})...`);
 
   try {
     const settings = await db.getSettings().catch(() => null);
@@ -91,19 +96,37 @@ async function startTelegramPolling() {
     currentPollingExecutionId = executionId;
 
     // --- STRATEGY: Environment Separation ---
-    // If the webhook is set to the Shared App URL, the Dev App (this instance usually)
-    // should NOT start polling, effectively letting the Shared App stay in charge via Webhooks.
+    // If we are the PRODUCTION instance, we PREFER Webhooks.
+    // If we are the DEV instance, we only step in if no Prod Webhook is active.
     try {
       const hookData = await callTelegram(botToken, "getWebhookInfo", {});
-      if (hookData && hookData.result && hookData.result.url) {
-         const hookUrl = hookData.result.url;
-         // Stricter check: only skip if it's THE shared app URL
-         const sharedPrefix = "https://ais-pre-";
-         if (hookUrl.includes(sharedPrefix)) {
-            console.log(`[Polling:${executionId}] ⚠️ Webhook active at Shared App (${hookUrl}). Instance ${INSTANCE_ID} will stay silent.`);
-            isPollingActive = false;
-            return;
-         }
+      const currentHookUrl = hookData?.result?.url || "";
+      
+      if (isProd) {
+        // We are the Published app. We should FORCE our webhook and NOT poll.
+        // Default to AI Studio shared URL if nothing else is set
+        let myWebhookUrl = "https://ais-pre-4kvme67znt7t7krxejpyoe-51222879362.europe-west2.run.app/api/telegram-webhook";
+        
+        // Priority: Use the APP_URL provided in the environment (e.g., on Railway)
+        const envAppUrl = process.env.APP_URL || "";
+        if (envAppUrl && envAppUrl.startsWith("https://")) {
+            myWebhookUrl = `${envAppUrl.replace(/\/$/, "")}/api/telegram-webhook`;
+        }
+
+        if (currentHookUrl !== myWebhookUrl) {
+          console.log(`[Published:${INSTANCE_ID}] 🔌 Redirecting Webhook to me: ${myWebhookUrl}`);
+          await callTelegram(botToken, "setWebhook", { url: myWebhookUrl });
+        }
+        console.log(`[Published:${INSTANCE_ID}] ✅ Webhook is active at ${myWebhookUrl}. Skipping Long Polling loop.`);
+        isPollingActive = false;
+        return;
+      } else {
+        // We are the Dev app. Check if Shared App Webhook is active.
+        if (currentHookUrl.includes("ais-pre-")) {
+          console.log(`[Dev:${INSTANCE_ID}] 🤐 Published app is handling messages via Webhook. Staying silent.`);
+          isPollingActive = false;
+          return;
+        }
       }
     } catch (err: any) {
       console.warn(`[Polling:${executionId}] Webhook check failed:`, err.message);
@@ -421,10 +444,45 @@ function getPublicAppUrl(req: express.Request): string {
   return "https://ais-pre-4kvme67znt7t7krxejpyoe-51222879362.europe-west2.run.app";
 }
 
+// Authentication Middleware for sensitive routes
+const adminAuthMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  // In development, we can be more lenient, but on Railway we need the key
+  const adminKey = process.env.ADMIN_ACCESS_KEY;
+  const providedKey = req.headers["x-admin-key"];
+
+  if (adminKey && providedKey === adminKey) {
+    return next();
+  }
+
+  // If no admin key is set in env, we fall back to existing logic (checked in client mostly)
+  // but for production custom domains, setting the key is mandatory for this bypass.
+  if (!adminKey) {
+    return next();
+  }
+
+  return res.status(401).json({ error: "Unauthorized: Missing or invalid Admin Access Key" });
+};
+
 // --- API ROUTES ---
 
+// Login with Access Key
+app.post("/api/auth/verify-key", (req, res) => {
+  const { key } = req.body;
+  const adminKey = process.env.ADMIN_ACCESS_KEY;
+  
+  if (!adminKey) {
+    return res.status(400).json({ error: "ADMIN_ACCESS_KEY is not configured on the server." });
+  }
+
+  if (key === adminKey) {
+    res.json({ success: true, message: "Key verified" });
+  } else {
+    res.status(401).json({ success: false, error: "كود الدخول غير صحيح" });
+  }
+});
+
 // 1. Get Telegram Webhook and configuration status
-app.get("/api/telegram-status", async (req, res) => {
+app.get("/api/telegram-status", adminAuthMiddleware, async (req, res) => {
   try {
     const settings = await db.getSettings();
     const botToken = settings.botToken || "";
@@ -464,7 +522,7 @@ app.get("/api/telegram-status", async (req, res) => {
 });
 
 // New polling toggle
-app.post("/api/polling/toggle", async (req, res) => {
+app.post("/api/polling/toggle", adminAuthMiddleware, async (req, res) => {
   try {
     const { enabled, claimMaster } = req.body;
     const settings = await db.getSettings();
@@ -492,7 +550,7 @@ app.post("/api/polling/toggle", async (req, res) => {
 });
 
 // 2. Setup/Force Webhook URL
-app.post("/api/setup-webhook", async (req, res) => {
+app.post("/api/setup-webhook", adminAuthMiddleware, async (req, res) => {
   try {
     const settings = await db.getSettings();
     const botToken = settings.botToken;
@@ -517,7 +575,7 @@ app.post("/api/setup-webhook", async (req, res) => {
 });
 
 // Remove Webhook and fallback to long polling
-app.post("/api/remove-webhook", async (req, res) => {
+app.post("/api/remove-webhook", adminAuthMiddleware, async (req, res) => {
   try {
     const settings = await db.getSettings();
     const botToken = settings.botToken;
@@ -539,7 +597,7 @@ app.post("/api/remove-webhook", async (req, res) => {
 });
 
 // 3. Admin Direct Replying
-app.post("/api/admin/reply", async (req, res) => {
+app.post("/api/admin/reply", adminAuthMiddleware, async (req, res) => {
   try {
     const { ticketId, replyMessage, newStatus } = req.body;
     if (!ticketId || !replyMessage || !newStatus) {
@@ -595,7 +653,7 @@ app.post("/api/admin/reply", async (req, res) => {
 // --- ADMIN CLIENT PARALLEL REST ENDPOINTS ---
 
 // Get Settings
-app.get("/api/settings", async (req, res) => {
+app.get("/api/settings", adminAuthMiddleware, async (req, res) => {
   try {
     const data = await db.getSettings();
     res.json(data);
@@ -605,7 +663,7 @@ app.get("/api/settings", async (req, res) => {
 });
 
 // Update Settings
-app.post("/api/settings", async (req, res) => {
+app.post("/api/settings", adminAuthMiddleware, async (req, res) => {
   try {
     const { botToken, adminChatId, welcomeMessage, allowedEmails } = req.body;
     await db.saveSettings({ botToken, adminChatId, welcomeMessage, allowedEmails: allowedEmails || [] });
@@ -620,7 +678,7 @@ app.post("/api/settings", async (req, res) => {
 });
 
 // Get Menus
-app.get("/api/menus", async (req, res) => {
+app.get("/api/menus", adminAuthMiddleware, async (req, res) => {
   try {
     const data = await db.getMenus();
     res.json(data);
@@ -630,7 +688,7 @@ app.get("/api/menus", async (req, res) => {
 });
 
 // Save Menu
-app.post("/api/menus", async (req, res) => {
+app.post("/api/menus", adminAuthMiddleware, async (req, res) => {
   try {
     const menu = req.body;
     await db.saveMenu(menu);
@@ -641,7 +699,7 @@ app.post("/api/menus", async (req, res) => {
 });
 
 // Delete Menu
-app.delete("/api/menus/:id", async (req, res) => {
+app.delete("/api/menus/:id", adminAuthMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
     await db.deleteMenu(id);
@@ -652,7 +710,7 @@ app.delete("/api/menus/:id", async (req, res) => {
 });
 
 // Delete Ticket
-app.delete("/api/tickets/:id", async (req, res) => {
+app.delete("/api/tickets/:id", adminAuthMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
     console.log(`[API] DELETE Request for Ticket ID: ${id}`);
@@ -666,7 +724,7 @@ app.delete("/api/tickets/:id", async (req, res) => {
 });
 
 // Get Tickets
-app.get("/api/tickets", async (req, res) => {
+app.get("/api/tickets", adminAuthMiddleware, async (req, res) => {
   try {
     const data = await db.getTickets();
     res.json(data);
@@ -676,7 +734,7 @@ app.get("/api/tickets", async (req, res) => {
 });
 
 // Get Support Messages
-app.get("/api/support-messages", async (req, res) => {
+app.get("/api/support-messages", adminAuthMiddleware, async (req, res) => {
   try {
     const data = await db.getSupportMessages();
     res.json(data);
@@ -686,7 +744,7 @@ app.get("/api/support-messages", async (req, res) => {
 });
 
 // Reply to Support Message
-app.post("/api/support-messages/reply", async (req, res) => {
+app.post("/api/support-messages/reply", adminAuthMiddleware, async (req, res) => {
   try {
     const { messageId, replyText } = req.body;
     if (!messageId || !replyText) {
@@ -729,7 +787,7 @@ app.post("/api/support-messages/reply", async (req, res) => {
 });
 
 // Delete Support Message
-app.delete("/api/support-messages/:id", async (req, res) => {
+app.delete("/api/support-messages/:id", adminAuthMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
     await db.deleteSupportMessage(id);
@@ -812,7 +870,7 @@ async function processTelegramUpdate(update: any) {
     }
 
     // --- HELPER: Ticket Completion Logic ---
-    const completeTicket = async (finalEmail: string, finalImage: string, planId: string) => {
+    const completeTicket = async (finalEmail: string, finalImage: string, planId: string, photoFileId?: string) => {
       const ticketId = "tick_" + Math.random().toString(36).substring(2, 11);
       const menusList = await db.getMenus();
       const selectedPlan = menusList.find(m => m.id === planId);
@@ -860,7 +918,9 @@ async function processTelegramUpdate(update: any) {
 
       // Notification to Admin
       const adminChatId = settings.adminChatId;
-      if (adminChatId && adminChatId.toString().trim() !== botId && !adminChatId.toString().trim().includes(":")) {
+      const isUserAdmin = adminChatId && adminChatId.toString().trim() === chatId.toString().trim();
+      
+      if (adminChatId && adminChatId.toString().trim() !== botId && !isUserAdmin && !adminChatId.toString().trim().includes(":")) {
         let adminAlertMsg = `🔔 *طلب اشتراك جديد قيد المراجعــة!*\n\n`;
         adminAlertMsg += `👤 العميل: *${fullName}* (@${username})\n`;
         adminAlertMsg += `✉️ البريد: \`${finalEmail}\`\n`;
@@ -874,9 +934,13 @@ async function processTelegramUpdate(update: any) {
           parse_mode: "Markdown"
         }).catch((err) => console.error("Error sending admin alert:", err));
 
-        // Note: For photo forwarding, we would need the file_id if it's available.
-        // If we only have base64, we'd use sendPhoto with a buffer/base64 but Telegram mostly prefers file_id or URL.
-        // The photo handling block will handle photo forwarding.
+        // If we have a fileId, use it to forward the photo
+        if (photoFileId) {
+          await callTelegram(botToken, "sendPhoto", {
+            chat_id: adminChatId,
+            photo: photoFileId
+          }).catch((err) => console.error("Error forwarding photo to admin:", err));
+        }
       }
     };
 
@@ -995,7 +1059,7 @@ async function processTelegramUpdate(update: any) {
         });
         
         const adminChatId = settings.adminChatId;
-        if (adminChatId && adminChatId.toString().trim() !== botId && !adminChatId.toString().trim().includes(":")) {
+        if (adminChatId && adminChatId.toString().trim() !== botId && adminChatId.toString().trim() !== chatId.toString() && !adminChatId.toString().trim().includes(":")) {
             await callTelegram(botToken, "sendMessage", {
                 chat_id: adminChatId,
                 text: `🚨 *رسالة دعم جديدة:*\n👤 ${fullName}\n✉️ ${text}`,
@@ -1069,16 +1133,7 @@ async function processTelegramUpdate(update: any) {
 
         if (session.email) {
             // Complete flow!
-            await completeTicket(session.email, base64Image, session.selectedPlanId!);
-            
-            // Still forward the photo to admin if configured
-            const adminChatId = settings.adminChatId;
-            if (adminChatId && adminChatId.toString().trim() !== botId && !adminChatId.toString().trim().includes(":")) {
-                await callTelegram(botToken, "sendPhoto", {
-                    chat_id: adminChatId,
-                    photo: fileId
-                }).catch(() => {});
-            }
+            await completeTicket(session.email, base64Image, session.selectedPlanId!, fileId);
         } else {
             await callTelegram(botToken, "sendMessage", {
                 chat_id: chatId,

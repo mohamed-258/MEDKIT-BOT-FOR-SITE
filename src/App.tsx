@@ -21,8 +21,20 @@ import { Menu, Ticket as TicketType, Setting, SupportMessage } from "./types";
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [adminKey, setAdminKey] = useState<string | null>(localStorage.getItem("adminKey"));
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [unauthorizedEmail, setUnauthorizedEmail] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [keyInput, setKeyInput] = useState("");
+  const [isVerifyingKey, setIsVerifyingKey] = useState(false);
+
+  const getHeaders = () => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (adminKey) {
+      headers["x-admin-key"] = adminKey;
+    }
+    return headers;
+  };
 
   // Firestore synchronizations
   const [settings, setSettings] = useState<Setting | null>(null);
@@ -135,7 +147,7 @@ export default function App() {
   // Fallback REST fetch API helpers
   const fetchRESTSettings = async () => {
     try {
-      const res = await fetch("/api/settings");
+      const res = await fetch("/api/settings", { headers: getHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data) {
@@ -152,7 +164,7 @@ export default function App() {
 
   const fetchRESTMenus = async () => {
     try {
-      const res = await fetch("/api/menus");
+      const res = await fetch("/api/menus", { headers: getHeaders() });
       if (res.ok) {
         const list = await res.json();
         if (list) {
@@ -166,7 +178,7 @@ export default function App() {
 
   const fetchRESTTickets = async () => {
     try {
-      const res = await fetch("/api/tickets");
+      const res = await fetch("/api/tickets", { headers: getHeaders() });
       if (res.ok) {
         const list = await res.json();
         if (list) {
@@ -181,7 +193,7 @@ export default function App() {
 
   const fetchRESTSupportMessages = async () => {
     try {
-      const res = await fetch("/api/support-messages");
+      const res = await fetch("/api/support-messages", { headers: getHeaders() });
       if (res.ok) {
         const list = await res.json();
         if (list) {
@@ -196,7 +208,7 @@ export default function App() {
 
   // 2. Fetch or Synchronize settings in real-time
   useEffect(() => {
-    if (!user) return;
+    if (!user && !adminKey) return;
     
     // Always load via API first
     fetchRESTSettings();
@@ -210,7 +222,7 @@ export default function App() {
 
   // Synchronize support messages in real-time
   useEffect(() => {
-    if (!user) return;
+    if (!user && !adminKey) return;
 
     fetchRESTSupportMessages();
 
@@ -219,11 +231,11 @@ export default function App() {
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [user]);
+  }, [user, adminKey]);
 
   // 3. Synchronize Menus in real-time
   useEffect(() => {
-    if (!user) return;
+    if (!user && !adminKey) return;
 
     // Always load via API first
     fetchRESTMenus();
@@ -233,11 +245,11 @@ export default function App() {
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [user]);
+  }, [user, adminKey]);
 
   // 4. Synchronize Tickets in real-time (order by newest)
   useEffect(() => {
-    if (!user) return;
+    if (!user && !adminKey) return;
 
     // Always load via API first
     fetchRESTTickets();
@@ -247,13 +259,14 @@ export default function App() {
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [user]);
+  }, [user, adminKey]);
 
   // Fetch Telegram Webhook Status from Server API
   const fetchTelegramWebhookStatus = async () => {
+    if (!user && !adminKey) return;
     setFetchingWebhook(true);
     try {
-      const res = await fetch("/api/telegram-status");
+      const res = await fetch("/api/telegram-status", { headers: getHeaders() });
       const data = await res.json();
       setWebhookStatus(data);
     } catch (err) {
@@ -264,26 +277,64 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (user) {
+    if (user || adminKey) {
       fetchTelegramWebhookStatus();
     }
-  }, [user, settings]);
+  }, [user, adminKey, settings]);
 
   // Handle Google Login
   const handleLogin = async () => {
     try {
       setCheckingAuth(true);
+      setLoginError(null);
       await signInWithPopup(auth, googleProvider);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login failed:", error);
+      if (error?.code === "auth/unauthorized-domain") {
+        setLoginError("هذا النطاق غير معتمد في إعدادات Firebase. يرجى إضافة رابط Railway إلى Authorized Domains.");
+      } else {
+        setLoginError("فشل تسجيل الدخول: " + (error?.message || "خطأ غير معروف"));
+      }
     } finally {
       setCheckingAuth(false);
+    }
+  };
+
+  // Handle Key Login
+  const handleKeyLogin = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!keyInput.trim()) return;
+    
+    setIsVerifyingKey(true);
+    setLoginError(null);
+    
+    try {
+      const res = await fetch("/api/auth/verify-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: keyInput.trim() })
+      });
+      
+      const data = await res.json();
+      if (res.ok) {
+        localStorage.setItem("adminKey", keyInput.trim());
+        setAdminKey(keyInput.trim());
+        setKeyInput("");
+      } else {
+        setLoginError(data.error || "فشل التحقق من الكود");
+      }
+    } catch (err) {
+      setLoginError("حدث خطأ في الاتصال بالخادم");
+    } finally {
+      setIsVerifyingKey(false);
     }
   };
 
   // Handle Logout
   const handleLogout = async () => {
     await signOut(auth);
+    localStorage.removeItem("adminKey");
+    setAdminKey(null);
     setUser(null);
     setUnauthorizedEmail(null);
   };
@@ -310,7 +361,7 @@ export default function App() {
       // Always save safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch("/api/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getHeaders(),
         body: JSON.stringify(payload)
       });
       if (!res.ok) {
@@ -358,7 +409,7 @@ export default function App() {
     try {
       const res = await fetch("/api/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getHeaders(),
         body: JSON.stringify(payload)
       });
       if (res.ok) {
@@ -391,7 +442,7 @@ export default function App() {
     try {
       const res = await fetch("/api/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getHeaders(),
         body: JSON.stringify(payload)
       });
       if (res.ok) {
@@ -418,7 +469,7 @@ export default function App() {
     try {
       const res = await fetch("/api/support-messages/reply", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getHeaders(),
         body: JSON.stringify({
           messageId: selectedSupportMessage.id,
           replyText: supportReplyText
@@ -447,7 +498,8 @@ export default function App() {
   const handleDeleteSupportMessage = async (msgId: string) => {
     try {
       const res = await fetch(`/api/support-messages/${msgId}`, {
-        method: "DELETE"
+        method: "DELETE",
+        headers: getHeaders()
       });
       if (res.ok) {
         fetchRESTSupportMessages();
@@ -480,7 +532,7 @@ export default function App() {
       // Always save safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch("/api/menus", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getHeaders(),
         body: JSON.stringify(payload)
       });
       if (!res.ok) {
@@ -514,7 +566,8 @@ export default function App() {
     try {
       // Always delete safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch(`/api/menus/${id}`, {
-        method: "DELETE"
+        method: "DELETE",
+        headers: getHeaders()
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -543,7 +596,7 @@ export default function App() {
     try {
       const res = await fetch("/api/setup-webhook", {
         method: "POST",
-        headers: { "Content-Type": "application/json" }
+        headers: getHeaders()
       });
       const data = await res.json();
       if (!res.ok) {
@@ -566,7 +619,7 @@ export default function App() {
     try {
       const res = await fetch("/api/remove-webhook", {
         method: "POST",
-        headers: { "Content-Type": "application/json" }
+        headers: getHeaders()
       });
       const data = await res.json();
       if (!res.ok) {
@@ -585,7 +638,7 @@ export default function App() {
     try {
       const res = await fetch("/api/polling/toggle", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getHeaders(),
         body: JSON.stringify({ enabled, claimMaster })
       });
       if (res.ok) {
@@ -610,7 +663,7 @@ export default function App() {
     try {
       const res = await fetch("/api/admin/reply", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getHeaders(),
         body: JSON.stringify({
           ticketId: selectedTicket.id,
           replyMessage: replyMessage.trim(),
@@ -649,7 +702,8 @@ export default function App() {
       setTicketToDeleteId(null);
       
       const res = await fetch(`/api/tickets/${id}`, {
-        method: "DELETE"
+        method: "DELETE",
+        headers: getHeaders()
       });
       
       if (res.ok) {
@@ -739,7 +793,7 @@ export default function App() {
   }
 
   // Not Logged In Landing Page
-  if (!user) {
+  if (!user && !adminKey) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center px-4 relative overflow-hidden font-sans" dir="rtl">
         {/* Background Gradients */}
@@ -758,40 +812,69 @@ export default function App() {
               <HeartPulse className="h-9 w-9 text-cyan-400" />
             </div>
             <h1 className="text-2xl font-bold text-white tracking-tight">دكتور ميدكيت 🏥</h1>
-            <p className="text-slate-400 text-sm mt-2 text-center text-slate-400 hover:text-slate-300 transition-colors">
-              لوحة التحكم وبوت الاشتراكات وتفعيل الأكواد الذكي يعمل 24/7
+            <p className="text-slate-400 text-sm mt-2 text-center">
+              لوحة التحكم وبوت الاشتراكات وتفعيل الأكواد الذكي
             </p>
           </div>
 
-          <div className="p-5 bg-slate-800/40 rounded-2xl border border-white/5 space-y-4 mb-8">
-            <div className="flex gap-3 text-right">
-              <div className="mt-1 p-1.5 bg-cyan-500/10 rounded-lg text-cyan-400 h-fit">
-                <ShieldCheck className="h-4 w-4" />
+          <AnimatePresence>
+            {loginError && (
+              <motion.div 
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-xs leading-relaxed text-right"
+              >
+                {loginError}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <div className="space-y-6">
+            <form onSubmit={handleKeyLogin} className="space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 mr-1">كود الدخول الماستر (لوحة التحكم)</label>
+                <div className="relative">
+                  <Key className="absolute right-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
+                  <input
+                    type="password"
+                    value={keyInput}
+                    onChange={(e) => setKeyInput(e.target.value)}
+                    placeholder="أدخل كود الأدمن هنا..."
+                    className="w-full bg-slate-800/80 border border-white/5 rounded-2xl py-3.5 pr-11 pl-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 transition-all"
+                  />
+                </div>
               </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                <strong>أمن البيانات بالكامل:</strong> البوابة تضمن الدخول الحصري والتحقق من حساب الأدمن المعتمد للمبيعات.
-              </p>
+              <button
+                type="submit"
+                disabled={isVerifyingKey}
+                className="w-full py-4 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-bold rounded-2xl transition-all shadow-xl shadow-cyan-500/10 flex items-center justify-center gap-2 group"
+              >
+                {isVerifyingKey ? (
+                  <RefreshCw className="h-5 w-5 animate-spin" />
+                ) : (
+                  <ShieldCheck className="h-5 w-5 group-hover:scale-110 transition-transform" />
+                )}
+                دخول الأدمن بالماستر كود
+              </button>
+            </form>
+
+            <div className="relative py-2">
+              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div>
+              <div className="relative flex justify-center text-xs uppercase"><span className="bg-slate-900/60 px-4 text-slate-500">أو عبر جوجل</span></div>
             </div>
-            <div className="flex gap-3 text-right">
-              <div className="mt-1 p-1.5 bg-cyan-500/10 rounded-lg text-cyan-400 h-fit">
-                <Bot className="h-4 w-4" />
-              </div>
-              <p className="text-xs text-slate-300 leading-relaxed">
-                <strong>ربط تليجرام فوري:</strong> تحكم بالباقات والتوكن، ووافق على الطلبات لتصل رسائل التفعيل للمستخدم على هاتفه فوراً.
-              </p>
-            </div>
+
+            <button
+              onClick={handleLogin}
+              className="w-full py-4 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-2xl transition-all border border-white/5 flex items-center justify-center gap-3"
+            >
+              <LogIn className="h-5 w-5" />
+              تسجيل الدخول - جوجل
+            </button>
           </div>
 
-          <button
-            onClick={handleLogin}
-            className="w-full py-4 bg-gradient-to-l from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white font-semibold rounded-2xl transition-all shadow-xl shadow-cyan-500/10 hover:shadow-cyan-500/20 flex items-center justify-center gap-3 border border-white/10 dark:active:scale-95"
-          >
-            <LogIn className="h-5 w-5" />
-            الدخول الآمن - دكتور ميدكيت
-          </button>
-
-          <p className="text-center text-slate-500 text-xs mt-6">
-            محمي ومعزز بسحابة Google Cloud Run و Firebase 🔐
+          <p className="text-center text-slate-500 text-[10px] mt-8 uppercase tracking-widest font-bold">
+            MedKit Control Center v2.0
           </p>
         </motion.div>
       </div>
@@ -814,7 +897,7 @@ export default function App() {
             <h2 className="font-bold text-white truncate text-base">دكتور ميدكيت 🏥</h2>
             <div className="flex items-center gap-2.5 mt-0.5">
               <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-              <p className="text-xs text-slate-400 truncate font-mono">{user?.email}</p>
+              <p className="text-xs text-slate-400 truncate font-mono">{user?.email || "Master Dashboard Access"}</p>
             </div>
           </div>
         </div>
