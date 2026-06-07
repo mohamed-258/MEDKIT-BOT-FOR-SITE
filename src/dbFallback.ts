@@ -9,7 +9,7 @@ interface Setting {
   adminChatId: string;
   welcomeMessage: string;
   seededMenus?: boolean;
-  allowedEmails?: string[];
+  dashboardPassword?: string;
   devPollingEnabled?: boolean;
   activeInstanceUrl?: string; // The URL of the instance allowed to respond to Telegram
   masterInstanceId?: string; // The ID of the instance allowed to process Telegram updates
@@ -29,6 +29,7 @@ interface SupportMessage {
   telegramUsername: string;
   telegramName: string;
   messageText: string;
+  messagePhotoUrl?: string;
   createdAt: string;
   replied: boolean;
   replyText?: string;
@@ -76,10 +77,10 @@ interface LocalDB {
 const DEFAULT_DB: LocalDB = {
   settings: {
     global: {
-      botToken: "8974609042:AAHWOSlmsLQeerqi-neMeFm9iyu0m9uwOdg",
-      adminChatId: "895138224",
+      botToken: "",
+      adminChatId: "",
       welcomeMessage: "أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت (MedKit) المعتمد! 🏥✨\n\nيرجى تحديد خطة الاشتراك المراد تفعيلها من القائمة بالأسفل لعرض تفاصيلها وطريقة التحويل وسنقوم بتفعيل حسابك فوراً:",
-      allowedEmails: ["mhsn68503@gmail.com"]
+      dashboardPassword: ""
     }
   },
   menus: {
@@ -131,6 +132,25 @@ function readLocalDB(): LocalDB {
   return cachedLocalDB;
 }
 
+// Remove undefined fields
+function cleanUndefined<T>(obj: T): T {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) {
+    return obj.map(v => cleanUndefined(v)) as any;
+  }
+  if (typeof obj !== 'object') return obj;
+  
+  const result = { ...obj } as any;
+  Object.keys(result).forEach(key => {
+    if (result[key] === undefined) {
+      delete result[key];
+    } else {
+      result[key] = cleanUndefined(result[key]);
+    }
+  });
+  return result;
+}
+
 // Write JSON DB
 function writeLocalDB(db: LocalDB) {
   cachedLocalDB = db; // Sync cache
@@ -158,10 +178,10 @@ export async function checkDatabaseStatus(firestoreInstance: admin.firestore.Fir
       console.log("Will assume Firestore is working but slow.");
       firestoreWorking = true;
     } else if (err.code && (err.code === 7 || err.code === 16 || String(err.code).includes("PERMISSION_DENIED") || String(err.code).includes("UNAUTHENTICATED"))) {
-      console.log("Database Link: FIRESTORE RESTRICTED (using local JSON storage layer).");
+      console.log("Database Link: FIRESTORE RESTRICTED (using local JSON storage layer).", err);
       firestoreWorking = false;
     } else {
-      console.log("Assuming Firestore is working after catching unknown error:", err.message);
+      console.log("Assuming Firestore is working after catching unknown error:", err);
       firestoreWorking = true;
     }
   }
@@ -227,7 +247,7 @@ export class DatabaseController {
     if (!firestoreWorking) return;
 
     try {
-      await this.fsDb.collection("settings").doc("global").set(settings, { merge: true });
+      await this.fsDb.collection("settings").doc("global").set(cleanUndefined(settings), { merge: true });
     } catch (err: any) {
       console.error("Firestore saveSettings failed:", err.message);
       throw err;
@@ -266,7 +286,7 @@ export class DatabaseController {
     if (!firestoreWorking) return;
 
     try {
-      await this.fsDb.collection("menus").doc(menu.id).set(menu);
+      await this.fsDb.collection("menus").doc(menu.id).set(cleanUndefined(menu));
     } catch (err: any) {
       console.error("Firestore saveMenu failed:", err.message);
       throw err;
@@ -320,7 +340,7 @@ export class DatabaseController {
     if (!firestoreWorking) return;
 
     try {
-      await this.fsDb.collection("tickets").doc(ticket.id).set(ticket);
+      await this.fsDb.collection("tickets").doc(ticket.id).set(cleanUndefined(ticket));
     } catch (err: any) {
       console.error("Firestore saveTicket failed:", err.message);
       throw err;
@@ -400,7 +420,7 @@ export class DatabaseController {
     if (!firestoreWorking) return;
 
     try {
-      await this.fsDb.collection("sessions").doc(session.userId).set(session);
+      await this.fsDb.collection("sessions").doc(session.userId).set(cleanUndefined(session));
     } catch (err: any) {
       console.error("Firestore saveSession failed:", err.message);
       throw err;
@@ -439,7 +459,7 @@ export class DatabaseController {
     if (!firestoreWorking) return;
 
     try {
-      await this.fsDb.collection("support_messages").doc(msg.id).set(msg);
+      await this.fsDb.collection("support_messages").doc(msg.id).set(cleanUndefined(msg));
     } catch (err: any) {
       console.error("Firestore saveSupportMessage failed:", err.message);
       throw err;

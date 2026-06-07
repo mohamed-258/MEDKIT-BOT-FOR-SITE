@@ -7,34 +7,15 @@ import {
   ChevronLeft, MessageSquare
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
-import { 
-  auth, db, googleProvider 
-} from "./firebase";
-import { 
-  signInWithPopup, signOut, onAuthStateChanged, User 
-} from "firebase/auth";
-import { 
-  collection, doc, onSnapshot, setDoc, updateDoc, deleteDoc, 
-  query, orderBy, serverTimestamp 
-} from "firebase/firestore";
 import { Menu, Ticket as TicketType, Setting, SupportMessage } from "./types";
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [adminKey, setAdminKey] = useState<string | null>(localStorage.getItem("adminKey"));
-  const [checkingAuth, setCheckingAuth] = useState(true);
-  const [unauthorizedEmail, setUnauthorizedEmail] = useState<string | null>(null);
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [keyInput, setKeyInput] = useState("");
-  const [isVerifyingKey, setIsVerifyingKey] = useState(false);
-
-  const getHeaders = () => {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (adminKey) {
-      headers["x-admin-key"] = adminKey;
-    }
-    return headers;
-  };
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return localStorage.getItem("dashboard_auth") === "true";
+  });
+  const [checkingAuth, setCheckingAuth] = useState(false);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [loginError, setLoginError] = useState("");
 
   // Firestore synchronizations
   const [settings, setSettings] = useState<Setting | null>(null);
@@ -60,7 +41,7 @@ export default function App() {
   const [supportReplyText, setSupportReplyText] = useState("");
   const [submittingSupportReply, setSubmittingSupportReply] = useState(false);
   const [supportReplySuccess, setSupportReplySuccess] = useState(false);
-  const [allowedEmailInput, setAllowedEmailInput] = useState("");
+  const [dashboardPasswordInput, setDashboardPasswordInput] = useState("");
 
   // Webhook states
   const [webhookStatus, setWebhookStatus] = useState<any>(null);
@@ -89,72 +70,31 @@ export default function App() {
     const errorPayload = {
       error: error instanceof Error ? error.message : String(error),
       operationType: operation,
-      path,
-      authInfo: {
-        userId: auth.currentUser?.uid,
-        email: auth.currentUser?.email,
-        emailVerified: auth.currentUser?.emailVerified
-      }
+      path
     };
     console.error("Firestore Diagnostic: ", JSON.stringify(errorPayload));
   };
 
-  // 1. Listen for Authentication Changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-      if (currentUser) {
-        try {
-          // Fetch settings directly to get dynamic allowedEmails list
-          const res = await fetch("/api/settings");
-          let allowedList: string[] = [];
-          if (res.ok) {
-            const data = await res.json();
-            if (data && data.allowedEmails) {
-              allowedList = data.allowedEmails;
-            }
-          }
-          
-          const isAllowed = currentUser.email === "mhsn68503@gmail.com" || 
-                            (currentUser.email && allowedList.includes(currentUser.email));
-                            
-          if (isAllowed) {
-            setUser(currentUser);
-            setUnauthorizedEmail(null);
-          } else {
-            setUnauthorizedEmail(currentUser.email);
-            setUser(null);
-            signOut(auth);
-          }
-        } catch (err) {
-          // Fallback if network issue but user is primary admin
-          if (currentUser.email === "mhsn68503@gmail.com") {
-            setUser(currentUser);
-            setUnauthorizedEmail(null);
-          } else {
-            setUnauthorizedEmail(currentUser.email);
-            setUser(null);
-            signOut(auth);
-          }
-        }
-      } else {
-        setUser(null);
-      }
-      setCheckingAuth(false);
-    });
-    return () => unsubscribe();
+    fetchRESTSettings();
   }, []);
 
   // Fallback REST fetch API helpers
   const fetchRESTSettings = async () => {
     try {
-      const res = await fetch("/api/settings", { headers: getHeaders() });
+      const res = await fetch("/api/settings");
       if (res.ok) {
         const data = await res.json();
         if (data) {
-          setSettings(data);
-          setTokenInput(data.botToken || "");
-          setAdminChatIdInput(data.adminChatId || "");
-          setWelcomeMsgInput(data.welcomeMessage || "");
+          setSettings((prev) => {
+            if (!prev) {
+              setTokenInput(data.botToken || "");
+              setAdminChatIdInput(data.adminChatId || "");
+              setWelcomeMsgInput(data.welcomeMessage || "");
+              setDashboardPasswordInput(data.dashboardPassword || "");
+            }
+            return data;
+          });
         }
       }
     } catch (err) {
@@ -164,7 +104,7 @@ export default function App() {
 
   const fetchRESTMenus = async () => {
     try {
-      const res = await fetch("/api/menus", { headers: getHeaders() });
+      const res = await fetch("/api/menus");
       if (res.ok) {
         const list = await res.json();
         if (list) {
@@ -178,7 +118,7 @@ export default function App() {
 
   const fetchRESTTickets = async () => {
     try {
-      const res = await fetch("/api/tickets", { headers: getHeaders() });
+      const res = await fetch("/api/tickets");
       if (res.ok) {
         const list = await res.json();
         if (list) {
@@ -193,7 +133,7 @@ export default function App() {
 
   const fetchRESTSupportMessages = async () => {
     try {
-      const res = await fetch("/api/support-messages", { headers: getHeaders() });
+      const res = await fetch("/api/support-messages");
       if (res.ok) {
         const list = await res.json();
         if (list) {
@@ -208,7 +148,7 @@ export default function App() {
 
   // 2. Fetch or Synchronize settings in real-time
   useEffect(() => {
-    if (!user && !adminKey) return;
+    if (!isAuthenticated) return;
     
     // Always load via API first
     fetchRESTSettings();
@@ -218,11 +158,11 @@ export default function App() {
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [user]);
+  }, [isAuthenticated]);
 
   // Synchronize support messages in real-time
   useEffect(() => {
-    if (!user && !adminKey) return;
+    if (!isAuthenticated) return;
 
     fetchRESTSupportMessages();
 
@@ -231,11 +171,11 @@ export default function App() {
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [user, adminKey]);
+  }, [isAuthenticated]);
 
   // 3. Synchronize Menus in real-time
   useEffect(() => {
-    if (!user && !adminKey) return;
+    if (!isAuthenticated) return;
 
     // Always load via API first
     fetchRESTMenus();
@@ -245,11 +185,11 @@ export default function App() {
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [user, adminKey]);
+  }, [isAuthenticated]);
 
   // 4. Synchronize Tickets in real-time (order by newest)
   useEffect(() => {
-    if (!user && !adminKey) return;
+    if (!isAuthenticated) return;
 
     // Always load via API first
     fetchRESTTickets();
@@ -259,14 +199,13 @@ export default function App() {
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [user, adminKey]);
+  }, [isAuthenticated]);
 
   // Fetch Telegram Webhook Status from Server API
   const fetchTelegramWebhookStatus = async () => {
-    if (!user && !adminKey) return;
     setFetchingWebhook(true);
     try {
-      const res = await fetch("/api/telegram-status", { headers: getHeaders() });
+      const res = await fetch("/api/telegram-status");
       const data = await res.json();
       setWebhookStatus(data);
     } catch (err) {
@@ -277,66 +216,42 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (user || adminKey) {
+    if (isAuthenticated) {
       fetchTelegramWebhookStatus();
     }
-  }, [user, adminKey, settings]);
+  }, [isAuthenticated, settings]);
 
-  // Handle Google Login
-  const handleLogin = async () => {
+  // Handle Password Login
+  const handleLogin = async (e: FormEvent) => {
+    e.preventDefault();
+    setCheckingAuth(true);
+    setLoginError("");
     try {
-      setCheckingAuth(true);
-      setLoginError(null);
-      await signInWithPopup(auth, googleProvider);
-    } catch (error: any) {
-      console.error("Login failed:", error);
-      if (error?.code === "auth/unauthorized-domain") {
-        setLoginError("هذا النطاق غير معتمد في إعدادات Firebase. يرجى إضافة رابط Railway إلى Authorized Domains.");
+      const res = await fetch("/api/settings");
+      if (res.ok) {
+        const data = await res.json();
+        const correctPassword = data.dashboardPassword || "admin";
+        if (passwordInput === correctPassword) {
+          localStorage.setItem("dashboard_auth", "true");
+          setIsAuthenticated(true);
+        } else {
+          setLoginError("كلمة المرور غير صحيحة");
+        }
       } else {
-        setLoginError("فشل تسجيل الدخول: " + (error?.message || "خطأ غير معروف"));
+        setLoginError("فشل استرجاع الإعدادات");
       }
+    } catch (error) {
+      console.error("Login failed:", error);
+      setLoginError("مشكلة في الاتصال بالشبكة");
     } finally {
       setCheckingAuth(false);
     }
   };
 
-  // Handle Key Login
-  const handleKeyLogin = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!keyInput.trim()) return;
-    
-    setIsVerifyingKey(true);
-    setLoginError(null);
-    
-    try {
-      const res = await fetch("/api/auth/verify-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: keyInput.trim() })
-      });
-      
-      const data = await res.json();
-      if (res.ok) {
-        localStorage.setItem("adminKey", keyInput.trim());
-        setAdminKey(keyInput.trim());
-        setKeyInput("");
-      } else {
-        setLoginError(data.error || "فشل التحقق من الكود");
-      }
-    } catch (err) {
-      setLoginError("حدث خطأ في الاتصال بالخادم");
-    } finally {
-      setIsVerifyingKey(false);
-    }
-  };
-
   // Handle Logout
-  const handleLogout = async () => {
-    await signOut(auth);
-    localStorage.removeItem("adminKey");
-    setAdminKey(null);
-    setUser(null);
-    setUnauthorizedEmail(null);
+  const handleLogout = () => {
+    localStorage.removeItem("dashboard_auth");
+    setIsAuthenticated(false);
   };
 
   // Copy helper
@@ -355,13 +270,13 @@ export default function App() {
       botToken: tokenInput.trim(),
       adminChatId: adminChatIdInput.trim(),
       welcomeMessage: welcomeMsgInput,
-      allowedEmails: settings?.allowedEmails || []
+      dashboardPassword: dashboardPasswordInput.trim() || "admin"
     };
     try {
       // Always save safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch("/api/settings", {
         method: "POST",
-        headers: getHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       if (!res.ok) {
@@ -378,85 +293,7 @@ export default function App() {
     }
   };
 
-  // 4a. Accessibility accounts (allowedEmails) management
-  const [allowedEmailError, setAllowedEmailError] = useState("");
-  
-  const handleAddAllowedEmail = async (e: FormEvent) => {
-    e.preventDefault();
-    setAllowedEmailError("");
-    if (!allowedEmailInput || !allowedEmailInput.trim()) return;
-    
-    const cleanEmail = allowedEmailInput.trim().toLowerCase();
-    if (!cleanEmail.includes("@")) {
-      setAllowedEmailError("الرجاء إدخال بريد إلكتروني صحيح");
-      return;
-    }
 
-    const currentEmails = settings?.allowedEmails || [];
-    if (currentEmails.includes(cleanEmail)) {
-      setAllowedEmailError("هذا الحساب مضاف مسبقاً");
-      return;
-    }
-
-    const updatedAllowedEmails = [...currentEmails, cleanEmail];
-    const payload = {
-      botToken: settings?.botToken || "",
-      adminChatId: settings?.adminChatId || "",
-      welcomeMessage: settings?.welcomeMessage || "",
-      allowedEmails: updatedAllowedEmails
-    };
-
-    try {
-      const res = await fetch("/api/settings", {
-        method: "POST",
-        headers: getHeaders(),
-        body: JSON.stringify(payload)
-      });
-      if (res.ok) {
-        setSettings({
-          botToken: settings?.botToken || "",
-          adminChatId: settings?.adminChatId || "",
-          welcomeMessage: settings?.welcomeMessage || "",
-          allowedEmails: updatedAllowedEmails
-        });
-        setAllowedEmailInput("");
-      } else {
-        setAllowedEmailError("فشل حفظ الحساب بالخادم");
-      }
-    } catch (err) {
-      console.error("Failed to add allowed email:", err);
-      setAllowedEmailError("حدث خطأ ما في الخادم");
-    }
-  };
-
-  const handleRemoveAllowedEmail = async (emailToRemove: string) => {
-    const currentEmails = settings?.allowedEmails || [];
-    const updatedAllowedEmails = currentEmails.filter(e => e !== emailToRemove);
-    const payload = {
-      botToken: settings?.botToken || "",
-      adminChatId: settings?.adminChatId || "",
-      welcomeMessage: settings?.welcomeMessage || "",
-      allowedEmails: updatedAllowedEmails
-    };
-
-    try {
-      const res = await fetch("/api/settings", {
-        method: "POST",
-        headers: getHeaders(),
-        body: JSON.stringify(payload)
-      });
-      if (res.ok) {
-        setSettings({
-          botToken: settings?.botToken || "",
-          adminChatId: settings?.adminChatId || "",
-          welcomeMessage: settings?.welcomeMessage || "",
-          allowedEmails: updatedAllowedEmails
-        });
-      }
-    } catch (err) {
-      console.error("Failed to remove allowed email:", err);
-    }
-  };
 
   // 4b. Support messages management
   const handleReplySupport = async (e: FormEvent) => {
@@ -469,7 +306,7 @@ export default function App() {
     try {
       const res = await fetch("/api/support-messages/reply", {
         method: "POST",
-        headers: getHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messageId: selectedSupportMessage.id,
           replyText: supportReplyText
@@ -498,8 +335,7 @@ export default function App() {
   const handleDeleteSupportMessage = async (msgId: string) => {
     try {
       const res = await fetch(`/api/support-messages/${msgId}`, {
-        method: "DELETE",
-        headers: getHeaders()
+        method: "DELETE"
       });
       if (res.ok) {
         fetchRESTSupportMessages();
@@ -532,7 +368,7 @@ export default function App() {
       // Always save safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch("/api/menus", {
         method: "POST",
-        headers: getHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       if (!res.ok) {
@@ -566,8 +402,7 @@ export default function App() {
     try {
       // Always delete safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch(`/api/menus/${id}`, {
-        method: "DELETE",
-        headers: getHeaders()
+        method: "DELETE"
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -596,7 +431,7 @@ export default function App() {
     try {
       const res = await fetch("/api/setup-webhook", {
         method: "POST",
-        headers: getHeaders()
+        headers: { "Content-Type": "application/json" }
       });
       const data = await res.json();
       if (!res.ok) {
@@ -619,7 +454,7 @@ export default function App() {
     try {
       const res = await fetch("/api/remove-webhook", {
         method: "POST",
-        headers: getHeaders()
+        headers: { "Content-Type": "application/json" }
       });
       const data = await res.json();
       if (!res.ok) {
@@ -638,7 +473,7 @@ export default function App() {
     try {
       const res = await fetch("/api/polling/toggle", {
         method: "POST",
-        headers: getHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled, claimMaster })
       });
       if (res.ok) {
@@ -663,7 +498,7 @@ export default function App() {
     try {
       const res = await fetch("/api/admin/reply", {
         method: "POST",
-        headers: getHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ticketId: selectedTicket.id,
           replyMessage: replyMessage.trim(),
@@ -702,8 +537,7 @@ export default function App() {
       setTicketToDeleteId(null);
       
       const res = await fetch(`/api/tickets/${id}`, {
-        method: "DELETE",
-        headers: getHeaders()
+        method: "DELETE"
       });
       
       if (res.ok) {
@@ -757,43 +591,8 @@ export default function App() {
     );
   }
 
-  // Unauthorized Warning
-  if (unauthorizedEmail) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center px-4 font-sans text-right" dir="rtl">
-        <motion.div 
-          initial={{ opacity: 0, y: 15 }} 
-          animate={{ opacity: 1, y: 0 }} 
-          className="w-full max-w-md bg-slate-900 border border-red-500/30 p-8 rounded-2xl shadow-2xl relative overflow-hidden"
-        >
-          <div className="absolute top-0 right-0 w-32 h-32 bg-red-500/5 rounded-full blur-2xl"></div>
-          <div className="flex justify-center mb-6">
-            <div className="p-4 bg-red-500/10 rounded-2xl border border-red-500/20 text-red-400">
-              <ShieldAlert className="h-10 w-10" />
-            </div>
-          </div>
-          <h2 className="text-xl font-bold text-white text-center mb-4">الدخول مرفوض لحماية البيانات!</h2>
-          <p className="text-slate-400 text-sm text-center leading-relaxed mb-6">
-            عذراً، البريد الإلكتروني <span className="font-mono text-cyan-400 block mt-1 select-all">{unauthorizedEmail}</span> غير مصرح له بالوصول إلى لوحة تفعيل ومراجعة منصة ميدكيت.
-            <br />
-            المسؤول والمتحكم الوحيد بالبوت هو صاحب البريد الإلكتروني المعتمد.
-          </p>
-          <div className="space-y-3">
-            <button
-              onClick={handleLogout}
-              className="w-full py-3 bg-red-600 hover:bg-red-500 text-white font-medium rounded-xl transition-all shadow-lg hover:shadow-red-600/10 flex items-center justify-center gap-2"
-            >
-              <LogOut className="h-5 w-5" />
-              تسجيل الخروج والمحاولة مجدداً
-            </button>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
-
   // Not Logged In Landing Page
-  if (!user && !adminKey) {
+  if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center px-4 relative overflow-hidden font-sans" dir="rtl">
         {/* Background Gradients */}
@@ -807,74 +606,52 @@ export default function App() {
           className="w-full max-w-md bg-slate-900/60 backdrop-blur-xl border border-white/5 p-8 rounded-3xl shadow-2xl relative"
         >
           {/* Logo */}
-          <div className="flex flex-col items-center mb-8">
+          <div className="flex flex-col items-center mb-6">
             <div className="h-16 w-16 bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 rounded-2xl flex items-center justify-center shadow-inner mb-4">
               <HeartPulse className="h-9 w-9 text-cyan-400" />
             </div>
             <h1 className="text-2xl font-bold text-white tracking-tight">دكتور ميدكيت 🏥</h1>
-            <p className="text-slate-400 text-sm mt-2 text-center">
-              لوحة التحكم وبوت الاشتراكات وتفعيل الأكواد الذكي
+            <p className="text-slate-400 text-sm mt-2 text-center hover:text-slate-300 transition-colors">
+              لوحة التحكم وبوت الاشتراكات
             </p>
           </div>
 
-          <AnimatePresence>
-            {loginError && (
-              <motion.div 
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: "auto" }}
-                exit={{ opacity: 0, height: 0 }}
-                className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-xs leading-relaxed text-right"
-              >
-                {loginError}
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <div className="space-y-6">
-            <form onSubmit={handleKeyLogin} className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-400 mr-1">كود الدخول الماستر (لوحة التحكم)</label>
-                <div className="relative">
-                  <Key className="absolute right-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
-                  <input
-                    type="password"
-                    value={keyInput}
-                    onChange={(e) => setKeyInput(e.target.value)}
-                    placeholder="أدخل كود الأدمن هنا..."
-                    className="w-full bg-slate-800/80 border border-white/5 rounded-2xl py-3.5 pr-11 pl-4 text-sm text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50 transition-all"
-                  />
-                </div>
-              </div>
-              <button
-                type="submit"
-                disabled={isVerifyingKey}
-                className="w-full py-4 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-bold rounded-2xl transition-all shadow-xl shadow-cyan-500/10 flex items-center justify-center gap-2 group"
-              >
-                {isVerifyingKey ? (
-                  <RefreshCw className="h-5 w-5 animate-spin" />
-                ) : (
-                  <ShieldCheck className="h-5 w-5 group-hover:scale-110 transition-transform" />
-                )}
-                دخول الأدمن بالماستر كود
-              </button>
-            </form>
-
-            <div className="relative py-2">
-              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/5"></div></div>
-              <div className="relative flex justify-center text-xs uppercase"><span className="bg-slate-900/60 px-4 text-slate-500">أو عبر جوجل</span></div>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">كلمة المرور</label>
+              <input
+                type="password"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                className="w-full bg-slate-800/80 border border-white/5 rounded-xl px-4 py-3 text-white text-right focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                placeholder="أدخل كلمة المرور للوصول"
+                dir="auto"
+                autoFocus
+              />
             </div>
+            
+            {loginError && (
+              <p className="text-red-400 text-sm text-center">{loginError}</p>
+            )}
 
             <button
-              onClick={handleLogin}
-              className="w-full py-4 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-2xl transition-all border border-white/5 flex items-center justify-center gap-3"
+              type="submit"
+              disabled={checkingAuth}
+              className="w-full py-4 bg-gradient-to-l from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 disabled:opacity-50 text-white font-semibold rounded-2xl transition-all shadow-xl shadow-cyan-500/10 hover:shadow-cyan-500/20 flex items-center justify-center gap-3 border border-white/10 dark:active:scale-95"
             >
-              <LogIn className="h-5 w-5" />
-              تسجيل الدخول - جوجل
+              {checkingAuth ? (
+                <div className="animate-spin h-5 w-5 border-2 border-white rounded-full border-t-transparent" />
+              ) : (
+                <>
+                  <LogIn className="h-5 w-5" />
+                  تسجيل الدخول
+                </>
+              )}
             </button>
-          </div>
+          </form>
 
-          <p className="text-center text-slate-500 text-[10px] mt-8 uppercase tracking-widest font-bold">
-            MedKit Control Center v2.0
+          <p className="text-center text-slate-500 text-xs mt-6">
+            النظام محمي ومقفل بكلمة المرور 🔐
           </p>
         </motion.div>
       </div>
@@ -897,7 +674,7 @@ export default function App() {
             <h2 className="font-bold text-white truncate text-base">دكتور ميدكيت 🏥</h2>
             <div className="flex items-center gap-2.5 mt-0.5">
               <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-              <p className="text-xs text-slate-400 truncate font-mono">{user?.email || "Master Dashboard Access"}</p>
+              <p className="text-xs text-slate-400 truncate font-mono">المدير العام</p>
             </div>
           </div>
         </div>
@@ -1892,6 +1669,11 @@ export default function App() {
 
                           <div className="bg-slate-950 p-3.5 border border-white/5 rounded-xl text-right">
                             <p className="text-xs text-slate-350 leading-relaxed font-sans whitespace-pre-line select-text">{msg.messageText}</p>
+                            {msg.messagePhotoUrl && (
+                               <div className="mt-2">
+                                  <img src={msg.messagePhotoUrl} alt="Sub support screenshot" className="w-full max-w-sm rounded-[6px] border border-white/5 object-contain" />
+                               </div>
+                            )}
                           </div>
 
                           {msg.replied && msg.replyText && (
@@ -1935,8 +1717,11 @@ export default function App() {
 
                         <div>
                           <span className="text-[10px] text-slate-500 uppercase tracking-widest block font-bold mb-1">رسالته الأخيرة</span>
-                          <div className="p-3 bg-slate-950 border border-white/5 rounded-xl text-xs text-slate-350 leading-relaxed font-sans max-h-[140px] overflow-y-auto select-text">
-                            {selectedSupportMessage.messageText}
+                          <div className="p-3 bg-slate-950 border border-white/5 rounded-xl text-xs text-slate-350 leading-relaxed font-sans max-h-[220px] overflow-y-auto select-text">
+                            <p>{selectedSupportMessage.messageText}</p>
+                            {selectedSupportMessage.messagePhotoUrl && (
+                                <img src={selectedSupportMessage.messagePhotoUrl} alt="Message Attachment" className="mt-2 w-full max-w-full rounded border border-white/5 object-contain max-h-32" />
+                            )}
                           </div>
                         </div>
 
@@ -2231,57 +2016,21 @@ export default function App() {
                     {/* Accessibility/Authentication Management Account List */}
                     <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4 text-right">
                       <h4 className="text-sm font-bold text-white flex items-center gap-1.5 justify-end">
-                        حسابات إمكانية الوصول للـ Dashboard 🔐
+                        كلمة مرور اللوحة 🔐
                         <UserCheck className="h-4.5 w-4.5 text-cyan-400" />
                       </h4>
                       <p className="text-xs text-slate-400 leading-relaxed">
-                        أضف حسابات بريد Gmail مصرح لها الدخول والتحكم باللوحة وتفعيل الطلبات. الحساب المالك الرئيسي مصرح له دوماً.
+                        قم بتعيين كلمة سر لدخول لوحة التحكم والوصول لكافة البيانات. أي شخص يملك كلمة السر يمكنه تسجيل الدخول.
                       </p>
 
-                      <form onSubmit={handleAddAllowedEmail} className="flex gap-2.5">
-                        <input
-                          type="email"
-                          required
-                          placeholder="user@gmail.com"
-                          value={allowedEmailInput}
-                          onChange={(e) => setAllowedEmailInput(e.target.value)}
-                          className="flex-1 bg-slate-950 border border-white/5 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-600 font-mono text-left focus:outline-none focus:border-cyan-500/50"
-                        />
-                        <button
-                          type="submit"
-                          className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold px-3 py-2 rounded-xl text-xs flex items-center justify-center cursor-pointer transition-colors"
-                        >
-                          <Plus className="h-4 w-4" />
-                        </button>
-                      </form>
-
-                      {allowedEmailError && (
-                        <p className="text-[10px] text-red-400 font-semibold">{allowedEmailError}</p>
-                      )}
-
-                      <hr className="border-white/5" />
-
-                      <div className="space-y-2">
-                        <span className="text-[10px] text-slate-500 uppercase font-bold block">قائمة الحسابات المضافة</span>
-                        {settings?.allowedEmails && settings.allowedEmails.length > 0 ? (
-                          <div className="space-y-1.5 max-h-[150px] overflow-y-auto pr-1">
-                            {settings.allowedEmails.map((email) => (
-                              <div key={email} className="flex justify-between items-center p-2 bg-slate-950 rounded-xl border border-white/5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveAllowedEmail(email)}
-                                  className="text-red-400/70 hover:text-red-400 transition-colors p-1"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                                <span className="font-mono text-xs text-slate-300">{email}</span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-[10px] text-slate-500 italic">لا توجد حسابات فرعية إضافية. المالك فقط لديه الصلاحية حالياً.</p>
-                        )}
-                      </div>
+                      <input
+                        type="text"
+                        placeholder="كلمة المرور للدخول (الافتراضي: admin)"
+                        value={dashboardPasswordInput}
+                        onChange={(e) => setDashboardPasswordInput(e.target.value)}
+                        className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder-slate-600 font-mono text-left focus:outline-none focus:border-cyan-500/50"
+                        dir="auto"
+                      />
                     </div>
 
                     {/* How to get Chat ID tutorials */}

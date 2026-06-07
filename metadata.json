@@ -2,5 +2,7 @@
   "name": "Medkit Admin Dashboard",
   "description": "Smart dashboard and Telegram bot for Medkit subscription management.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
