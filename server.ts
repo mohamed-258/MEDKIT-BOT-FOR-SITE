@@ -624,20 +624,23 @@ async function runLongPolling() {
         }
       }
     } catch (err: any) {
-      console.error('Long Polling encountered an error:', err.message);
-      // Automatically self-heal conflict issues by dropping hook if a conflict (409) arises
-      if (err.message && (err.message.includes('409') || err.message.toLowerCase().includes('conflict'))) {
-        try {
-          const settings = await db.getSettings();
-          if (settings.botToken) {
-            await callTelegramAPI(settings.botToken, 'deleteWebhook', {});
-            console.log("Automatically deleted conflicting webhook to resume long polling successfully.");
-          }
-        } catch (whErr: any) {
-          console.error("Failed to delete conflicting webhook during self-healing:", whErr.message);
-        }
+      const errMsg = err.message || "";
+      console.error('Long Polling encountered an error:', errMsg);
+      
+      // Self-healing backoff logic for multi-instance getUpdates conflicts
+      if (errMsg.includes('terminated by other getUpdates') || errMsg.toLowerCase().includes('terminated by other')) {
+        console.warn(`⚠️ [Polling Standby] Another active instance detected calling getUpdates for this bot! This instance (${instanceId}) will step down and sleep for 90 seconds to prevent conflicts and ensure production runs smoothly.`);
+        await new Promise(resolve => setTimeout(resolve, 90000));
+      } 
+      // Safe guard for Webhook active conflicts
+      else if (errMsg.includes("can't use getUpdates") || errMsg.toLowerCase().includes('webhook is active') || errMsg.includes('409')) {
+        console.warn(`🚨 [Webhook Active] A Telegram Webhook is active. This instance (${instanceId}) will suspend long-polling and standby for 120 seconds.`);
+        await new Promise(resolve => setTimeout(resolve, 120000));
+      } 
+      // Generic error backoff
+      else {
+        await new Promise(resolve => setTimeout(resolve, 6000));
       }
-      await new Promise(resolve => setTimeout(resolve, 6000));
     }
     await new Promise(resolve => setTimeout(resolve, 600));
   }

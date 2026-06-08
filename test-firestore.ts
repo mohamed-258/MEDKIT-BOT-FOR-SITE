@@ -9,6 +9,26 @@ const firestore = getFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
 try {
   firestore.settings({ ignoreUndefinedProperties: true });
   console.log("Settings applied successfully!");
-} catch (err) {
+  
+  (async () => {
+    try {
+      const snap = await firestore.collection("settings").doc("global").get();
+      if (snap.exists) {
+        console.log("SUCCESS READ: settings/global exists, data:", snap.data());
+      } else {
+        console.log("SUCCESS READ: settings/global does not exist, but document lookup worked.");
+      }
+      
+      // Test write
+      await firestore.collection("system").doc("test_write").set({
+        timestamp: Date.now(),
+        status: "test"
+      });
+      console.log("SUCCESS WRITE: system/test_write successfully written!");
+    } catch (e: any) {
+      console.error("FIRESTORE ACTION FAILED:", e.message, "\nCode:", e.code);
+    }
+  })();
+} catch (err: any) {
   console.error("Error applying settings:", err.message);
 }
