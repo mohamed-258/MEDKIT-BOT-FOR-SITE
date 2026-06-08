@@ -905,10 +905,10 @@ app.post('/api/polling/toggle', async (req, res) => {
 });
 
 // Incoming Telegram Webhook
-app.post('/api/webhook/telegram', async (req, res) => {
+app.post(['/api/webhook/telegram', '/api/webhook', '/api/webhook/'], async (req, res) => {
   try {
     const update = req.body;
-    // Send 200 OK immediately to Telegram to prevent retry timeouts
+    // Send 200 OK immediately to Telegram/Railway to prevent retry timeouts
     res.status(200).send('OK');
     
     if (update && update.update_id) {
