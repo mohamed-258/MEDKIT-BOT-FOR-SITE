@@ -1822,7 +1822,7 @@ export default function App() {
                           className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 font-mono text-left focus:outline-none focus:border-cyan-500/50"
                         />
                         <span className="text-[10px] text-slate-500 leading-relaxed block mt-1">
-                          قم بوضعه لتصلك تنبيهات طلبات المشتركين الجدد وإيصالاتهم على حسابك التليجرام الخاص بك على الفور!
+                          قم بوضعه لتصلك تنبيهات طلبات المشتركين الجدد وإيصالاتهم على حسابك التليجرام الخاص بك على الفور! يمكنك وضع أكثر من معرف مفصولاً بفاصلة أو مسافة لتعيين عدة مشرفين (مثال: 1234567, 8765432) لتصلهم جميعاً الإشعارات والطلبات وسيرسل للباقي موافقة/رد المشرف الآخر.
                         </span>
                       </div>
 

@@ -43,7 +43,11 @@ checkDatabaseStatus(firestore).catch((err) => console.error("Database status che
 async function callTelegramAPI(token: string, method: string, payload: any) {
   const url = `https://api.telegram.org/bot${token}/${method}`;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 seconds timeout
+  // Adjust timeout: getUpdates can wait up to payload.timeout (default 15s) plus network overhead.
+  const timeoutMs = method === 'getUpdates' 
+    ? ((payload?.timeout || 15) * 1000 + 10000) 
+    : 15000; // 15 seconds for regular Telegram API calls to handle slow networks or cold boots
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   
   try {
     const res = await fetch(url, {
@@ -63,7 +67,7 @@ async function callTelegramAPI(token: string, method: string, payload: any) {
     clearTimeout(timeoutId);
     let errMsg = err.message;
     if (err.name === 'AbortError') {
-      errMsg = "انتهاء مهلة الاتصال بخوادم تليجرام (8 ثوانٍ)";
+      errMsg = `انتهاء مهلة الاتصال بخوادم تليجرام (${Math.round(timeoutMs / 1000)} ثوانٍ)`;
     }
     console.error(`Telegram API Call to ${method} failed:`, errMsg);
     throw new Error(errMsg);
@@ -100,6 +104,44 @@ async function setupTelegramWebhook(token: string, enable: boolean, appUrl: stri
     console.error("setupTelegramWebhook failed:", err.message);
     throw err;
   }
+}
+
+// parseUserIdAndTicketId helper function for parsing text reliably
+function parseUserIdAndTicketId(text: string) {
+  let userId: string | null = null;
+  let ticketId: string | null = null;
+
+  if (!text) return { userId, ticketId };
+
+  const userFilters = [
+    /(?:معرف العميل للرد|معرف العميل|العميل للرد|العميل|Client ID|User ID|ID|id)[^\d\n-]*[:\s]*(-?\d+)/i,
+    /ID\s*:\s*(-?\d+)/i,
+    /id\s*:\s*(-?\d+)/i,
+    /(?:ID|id)[\s:]*(-?\d+)/i
+  ];
+
+  for (const filter of userFilters) {
+    const match = text.match(filter);
+    if (match && match[1]) {
+      userId = match[1];
+      break;
+    }
+  }
+
+  const ticketFilters = [
+    /(?:رقم الطلب|Ticket ID|رقم التذكرة|الطلب)[^\s\n:]*[:\s]*(tkt_[a-zA-Z0-9_]+)/i,
+    /(tkt_[a-zA-Z0-9_]+)/i
+  ];
+
+  for (const filter of ticketFilters) {
+    const match = text.match(filter);
+    if (match && match[1]) {
+      ticketId = match[1];
+      break;
+    }
+  }
+
+  return { userId, ticketId };
 }
 
 // ─── Telegram Update Handler ───────────────────────────────────────────────
@@ -150,8 +192,20 @@ async function handleTelegramUpdate(update: any) {
         if (action === 'reply') {
           await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
             callback_query_id: cb.id,
-            text: "للرد برسالة مخصصة، يرجى كتابة الرد بعمل Reply مباشرةً على هذه الرسالة.",
-            show_alert: true
+            text: "تم تفعيل حقل كتابة الرد الفوري للعميل..."
+          });
+
+          const replyPrompt = `💬 <b>اكتب ردك الموجه للعميل أدناه:</b>\n\n👤 معرف العميل للرد: <code>${ticket.telegramUserId}</code>\n🆔 رقم الطلب: <code>${ticket.id}</code>\n\n👈 قم بـ Reply (رد) مباشرة على هذه الرسالة واكتب ردك الموجه للعميل وسيتم إرساله وتحديثه فوراً!`;
+
+          await callTelegramAPI(settings.botToken, "sendMessage", {
+            chat_id: chatIdStr,
+            text: replyPrompt,
+            parse_mode: "HTML",
+            reply_to_message_id: cb.message?.message_id,
+            reply_markup: {
+              force_reply: true,
+              selective: true
+            }
           });
           return;
         }
@@ -292,25 +346,88 @@ async function handleTelegramUpdate(update: any) {
 
         if (isAdmin && replyText) {
           const textToSearch = (replyTo.text || replyTo.caption || "");
-          const userIdMatch = textToSearch.match(/(?:معرف العميل|معرف العميل للرد):\s*(\d+)/) || textToSearch.match(/id:\s*([^\s\n]+)/i);
-          const ticketIdMatch = textToSearch.match(/(?:رقم الطلب|Ticket ID):\s*([a-zA-Z0-9_]+)/);
+          const { userId: targetUserId, ticketId } = parseUserIdAndTicketId(textToSearch);
 
-          if (userIdMatch) {
-            const targetUserId = userIdMatch[1];
+          if (targetUserId) {
             try {
               // Send direct reply message to customer
               await sendTelegramMessage(settings.botToken, targetUserId, `💬 <b>رد من إدارة ميدكيت:</b>\n\n${replyText}`);
               await sendTelegramMessage(settings.botToken, chatIdStr, `✅ تم إرسال ردك الخاص بنجاح للعميل.`);
 
-              // If a Ticket ID exists in the original forwarded message, update its status
-              if (ticketIdMatch) {
-                const ticketId = ticketIdMatch[1];
+              // Find who replied
+              const adminName = [from.first_name || '', from.last_name || ''].filter(Boolean).join(' ') || "مشرف الإدارة";
+
+              // Broadcast notification to other admins
+              const broadcastMsg = `💬 <b>البوت: تم إرسال رد مخصص للعميل!</b>\n\n👤 العميل: <b>معرف العميل (ID: ${targetUserId})</b>\n✍️ الرد: <b>${replyText}</b>\n\n👮 المشرف الذي قام بالرد: <b>${adminName}</b> (@${from.username || ''})`;
+              for (const adminId of adminIds) {
+                if (adminId !== chatIdStr && adminId !== from.id?.toString()) {
+                  await sendTelegramMessage(settings.botToken, adminId, broadcastMsg).catch(e => {});
+                }
+              }
+
+              // If a Ticket ID exists, update its status to replied
+              if (ticketId) {
                 const ticket = await db.getTicket(ticketId);
                 if (ticket) {
                   ticket.status = "replied";
                   ticket.adminComment = replyText;
                   ticket.updatedAt = new Date().toISOString();
                   await db.saveTicket(ticket);
+
+                  // Dismiss inline keyboards on decision
+                  try {
+                    const originalMessageId = replyTo.reply_to_message?.message_id;
+                    if (originalMessageId && replyTo.reply_to_message?.chat?.id) {
+                      const chat_id = replyTo.reply_to_message.chat.id;
+                      if (replyTo.reply_to_message.photo) {
+                        const originalCaption = replyTo.reply_to_message.caption || "";
+                        const cleanCaption = originalCaption + `\n\n📥 <b>القرار: تم الرد المخصص (${adminName})</b>`;
+                        await callTelegramAPI(settings.botToken, "editMessageCaption", {
+                          chat_id,
+                          message_id: originalMessageId,
+                          caption: cleanCaption,
+                          parse_mode: "HTML",
+                          reply_markup: { inline_keyboard: [] }
+                        }).catch(() => {});
+                      } else {
+                        const originalText = replyTo.reply_to_message.text || "";
+                        const cleanText = originalText + `\n\n📥 <b>القرار: تم الرد المخصص (${adminName})</b>`;
+                        await callTelegramAPI(settings.botToken, "editMessageText", {
+                          chat_id,
+                          message_id: originalMessageId,
+                          text: cleanText,
+                          parse_mode: "HTML",
+                          reply_markup: { inline_keyboard: [] }
+                        }).catch(() => {});
+                      }
+                    } else if (replyTo.message_id && replyTo.chat?.id) {
+                      const chat_id = replyTo.chat.id;
+                      const msg_id = replyTo.message_id;
+                      if (replyTo.photo) {
+                        const originalCaption = replyTo.caption || "";
+                        const cleanCaption = originalCaption + `\n\n📥 <b>القرار: تم الرد المخصص (${adminName})</b>`;
+                        await callTelegramAPI(settings.botToken, "editMessageCaption", {
+                          chat_id,
+                          message_id: msg_id,
+                          caption: cleanCaption,
+                          parse_mode: "HTML",
+                          reply_markup: { inline_keyboard: [] }
+                        }).catch(() => {});
+                      } else {
+                        const originalText = replyTo.text || "";
+                        const cleanText = originalText + `\n\n📥 <b>القرار: تم الرد المخصص (${adminName})</b>`;
+                        await callTelegramAPI(settings.botToken, "editMessageText", {
+                          chat_id,
+                          message_id: msg_id,
+                          text: cleanText,
+                          parse_mode: "HTML",
+                          reply_markup: { inline_keyboard: [] }
+                        }).catch(() => {});
+                      }
+                    }
+                  } catch (e: any) {
+                    console.error("Failed to dismiss inline keyboard:", e.message);
+                  }
                 }
               }
             } catch (err: any) {
@@ -820,8 +937,8 @@ async function runLongPolling() {
     try {
       const settings = await db.getSettings();
       
-      // Standby / sleep if token missing or devPollingEnabled is set to false
-      if (!settings.botToken || settings.devPollingEnabled === false) {
+      // Standby / sleep if token missing, devPollingEnabled is set to false, or webhook is active
+      if (!settings.botToken || settings.devPollingEnabled === false || settings.activeInstanceUrl) {
         await new Promise(resolve => setTimeout(resolve, 5000));
         continue;
       }
