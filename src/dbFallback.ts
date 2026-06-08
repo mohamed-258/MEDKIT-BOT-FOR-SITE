@@ -162,7 +162,7 @@ function writeLocalDB(db: LocalDB) {
 }
 
 // Check if Firestore is Operational (not disabled or permissions denied)
-let firestoreWorking = true;
+let firestoreWorking = false;
 
 export async function checkDatabaseStatus(firestoreInstance: admin.firestore.Firestore): Promise<boolean> {
   if (!firestoreInstance) {
@@ -441,6 +441,23 @@ export class DatabaseController {
   }
 
   // support messages
+  async getSupportMessage(id: string): Promise<SupportMessage | null> {
+    if (!firestoreWorking) {
+      return readLocalDB().supportMessages?.[id] || null;
+    }
+
+    try {
+      const snap = await this.fsDb.collection("support_messages").doc(id).get();
+      if (snap.exists) {
+        return { id: snap.id, ...snap.data() } as SupportMessage;
+      }
+    } catch (err: any) {
+      handleFirestoreError(err, "getSupportMessage");
+      return readLocalDB().supportMessages?.[id] || null;
+    }
+    return null;
+  }
+
   async getSupportMessages(): Promise<SupportMessage[]> {
     if (!firestoreWorking) {
       return Object.values(readLocalDB().supportMessages || {}).sort((a, b) => 
