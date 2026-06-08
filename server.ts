@@ -2,627 +2,648 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
-import { BotSettings, BotMessage, TelegramUser, BroadcastLog, SystemLog, AutoResponse } from './src/types.ts';
+import admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
+import { DatabaseController, checkDatabaseStatus } from './src/dbFallback.ts';
+import { Setting, SupportMessage, Menu, Ticket } from './src/types.ts';
 
 dotenv.config();
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
-const DATA_FILE = path.join(process.cwd(), 'data-store.json');
 
 app.use(express.json());
 
-// ─── Gemini AI Client ────────────────────────────────────────────────────────
-let aiClient: GoogleGenAI | null = null;
-function getGeminiClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
-  if (!aiClient) {
-    aiClient = new GoogleGenAI({
-      apiKey,
-      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-    });
+// Generate a random instance id for multi-instance identification and master polling logic
+const instanceId = `inst_${Math.random().toString(36).substring(2, 11)}`;
+
+// ─── Firebase Admin Setup ───────────────────────────────────────────────────
+let firestore: any;
+try {
+  const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(firebaseConfigPath)) {
+    const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"));
+    const adminApp = admin.apps.length ? admin.app() : admin.initializeApp({ projectId: firebaseConfig.projectId });
+    firestore = getFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
+    firestore.settings({ ignoreUndefinedProperties: true });
+    console.log("Firebase Admin SDK successfully configured with Firestore ID:", firebaseConfig.firestoreDatabaseId);
+  } else {
+    console.warn("firebase-applet-config.json not found. Operating with local memory/JSON database.");
   }
-  return aiClient;
+} catch (e: any) {
+  console.error("Failed to initialize Firebase Admin SDK. Fallback to local store enabled. Error:", e.message);
 }
 
-// ─── Database ────────────────────────────────────────────────────────────────
-function loadDatabase() {
-  const defaultData = {
-    settings: {
-      token: '',
-      webhookEnabled: false,
-      aiEnabled: false,
-      aiSystemPrompt: 'أنت MEDKIT42، مساعد منصة ميدكيت التعليمية الطبية. تساعد المستخدمين في الاستفسار عن الاشتراكات والباقات. كن مختصراً وودوداً باللغة العربية.',
-      autoResponses: [
-        {
-          id: 'rule_start',
-          trigger: '/start',
-          response: '🏥 أهلاً وسهلاً بك في بوت منصة MedKit 42!\n\nاختر ما تريد من القائمة أدناه 👇',
-          buttonType: 'reply',
-          buttonColumns: 2,
-          buttons: [
-            { id: 'btn_midrrs',  label: '🩺 Mid RRS',        responseText: '🩺 باقة Mid RRS\n\n📋 المحتوى:\n• محاضرات RRS المسجلة كاملة\n• ملخصات PDF شاملة\n• بنك أسئلة MCQ تفاعلي\n\n💰 السعر: تواصل معنا للاستفسار\n📅 المدة: فصل دراسي كامل\n\n✅ للاشتراك اكتب /subscribe' },
-            { id: 'btn_fullpkg', label: '📚 الباقة الكاملة',  responseText: '📚 الباقة الكاملة — Full Package\n\n📋 المحتوى:\n• جميع المحاضرات المسجلة\n• ملخصات لكل المواد\n• بنك أسئلة MCQ شامل\n• متابعة دورية مع الفريق\n\n💰 السعر: تواصل معنا\n📅 المدة: السنة الدراسية كاملة\n\n✅ للاشتراك اكتب /subscribe' },
-            { id: 'btn_prices',  label: '💳 الأسعار والدفع',  responseText: '💳 طرق الدفع المتاحة:\n\n• تحويل بنكي\n• فودافون كاش\n• اورنج كاش\n• انستا باي\n\n📞 للاستفسار عن الأسعار تواصل معنا مباشرةً عبر /contact' },
-            { id: 'btn_contact', label: '📞 تواصل معنا',      responseText: '📞 تواصل مع فريق MedKit 42\n\n👨‍💻 للدعم والاشتراك:\n@MedKit42_Support\n\n🕐 أوقات الرد:\nالسبت - الخميس من 9 ص حتى 11 م\n\n⚡ سيتم الرد عليك في أقرب وقت!' },
-            { id: 'btn_about',   label: 'ℹ️ من نحن',          responseText: '🏥 منصة MedKit 42\n\nمنصة تعليمية طبية متخصصة تقدم:\n✅ محاضرات مسجلة عالية الجودة\n✅ ملخصات علمية دقيقة\n✅ أسئلة MCQ تفاعلية\n✅ متابعة مستمرة من الفريق\n\n🎯 هدفنا: مساعدتك على النجاح والتفوق!' },
-            { id: 'btn_sub',     label: '✅ اشترك الآن',       responseText: '✅ رائع! سعيد باهتمامك بالاشتراك 🎉\n\nللإتمام تواصل معنا مباشرةً:\n📱 @MedKit42_Support\n\nسيتواصل معك أحد أعضاء الفريق خلال دقائق 🚀' }
-          ]
-        },
-        { id: 'rule_help',      trigger: '/help',      response: '📋 الأوامر المتاحة:\n\n/start — القائمة الرئيسية\n/subscribe — الاشتراك في الباقات\n/contact — التواصل مع الدعم\n/about — معلومات عن المنصة', buttonType: 'reply', buttonColumns: 1, buttons: [] },
-        { id: 'rule_subscribe', trigger: '/subscribe', response: '✅ للاشتراك في إحدى باقات MedKit 42:\n\n1️⃣ اختر الباقة من /start\n2️⃣ تواصل مع الدعم @MedKit42_Support\n3️⃣ أتم عملية الدفع\n4️⃣ احصل على وصولك الفوري! 🚀', buttonType: 'reply', buttonColumns: 1, buttons: [] },
-        { id: 'rule_contact',   trigger: '/contact',   response: '📞 تواصل مع فريق MedKit 42\n\n👨‍💻 للدعم والاشتراك:\n@MedKit42_Support\n\n🕐 أوقات الرد: السبت - الخميس 9ص - 11م', buttonType: 'reply', buttonColumns: 1, buttons: [] },
-        { id: 'rule_about',     trigger: '/about',     response: '🏥 منصة MedKit 42\n\n✅ محاضرات مسجلة عالية الجودة\n✅ ملخصات علمية دقيقة\n✅ أسئلة MCQ تفاعلية\n✅ متابعة مستمرة\n\nللباقات والأسعار: /start', buttonType: 'reply', buttonColumns: 1, buttons: [] }
-      ] as AutoResponse[],
-      adminPassword: ''
-    } as BotSettings,
-    users: [] as TelegramUser[],
-    messages: [] as BotMessage[],
-    broadcasts: [] as BroadcastLog[],
-    logs: [
-      { id: 'log_init', timestamp: new Date().toISOString(), type: 'success', message: '✅ تم تهيئة بوت منصة MedKit 42 بنجاح. أضف التوكن من الإعدادات للبدء.' }
-    ] as SystemLog[]
-  };
+// Instantiate DatabaseController
+const db = new DatabaseController(firestore);
+checkDatabaseStatus(firestore).catch((err) => console.error("Database status check error:", err.message));
 
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const content = fs.readFileSync(DATA_FILE, 'utf-8');
-      return JSON.parse(content);
-    } else {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(defaultData, null, 2), 'utf-8');
-      return defaultData;
-    }
-  } catch (error) {
-    console.error('Failed to load database:', error);
-    return defaultData;
-  }
-}
-
-function saveDatabase(data: any) {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (error) {
-    console.error('Failed to save database:', error);
-  }
-}
-
-function addLog(db: any, type: 'info' | 'success' | 'warn' | 'error', message: string) {
-  const newLog: SystemLog = {
-    id: `log_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
-    timestamp: new Date().toISOString(),
-    type,
-    message
-  };
-  db.logs.unshift(newLog);
-  if (db.logs.length > 150) db.logs = db.logs.slice(0, 150);
-}
-
-// ─── Telegram API ────────────────────────────────────────────────────────────
+// ─── Telegram API Helper ────────────────────────────────────────────────────
 async function callTelegramAPI(token: string, method: string, payload: any) {
-  if (!token) throw new Error('Token is missing');
   const url = `https://api.telegram.org/bot${token}/${method}`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const errText = await response.text();
-    throw new Error(`Telegram API Error (${response.status}): ${errText}`);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+    const resData = await res.json();
+    if (!res.ok || !resData.ok) {
+      throw new Error(resData.description || `HTTP ${res.status}`);
+    }
+    return resData;
+  } catch (err: any) {
+    console.error(`Telegram API Call to ${method} failed:`, err.message);
+    throw err;
   }
-  return response.json();
 }
 
 async function sendTelegramMessage(token: string, chatId: string, text: string, replyMarkup?: any) {
-  try {
-    const payload: any = { chat_id: chatId, text, parse_mode: 'HTML' };
-    if (replyMarkup) payload.reply_markup = replyMarkup;
-    return await callTelegramAPI(token, 'sendMessage', payload);
-  } catch (error: any) {
-    console.error('sendMessage failed:', error.message);
-    throw error;
+  const payload: any = {
+    chat_id: chatId,
+    text: text,
+    parse_mode: "HTML"
+  };
+  if (replyMarkup) {
+    if (replyMarkup.inline_keyboard) {
+      payload.reply_markup = { inline_keyboard: replyMarkup.inline_keyboard };
+    } else {
+      payload.reply_markup = replyMarkup;
+    }
   }
+  return await callTelegramAPI(token, "sendMessage", payload);
 }
 
 async function setupTelegramWebhook(token: string, enable: boolean, appUrl: string) {
   try {
     if (enable) {
-      const targetUrl = `${appUrl}/api/webhook/telegram`.replace('//api/webhook', '/api/webhook');
-      console.log(`Setting up Webhook to ${targetUrl}`);
-      return await callTelegramAPI(token, 'setWebhook', { url: targetUrl });
+      const targetUrl = `${appUrl}/api/webhook/telegram`;
+      console.log(`Setting up setWebhook to target URL: ${targetUrl}`);
+      return await callTelegramAPI(token, "setWebhook", { url: targetUrl });
     } else {
-      console.log('Removing Telegram Webhook');
-      return await callTelegramAPI(token, 'deleteWebhook', {});
+      console.log("Deleting Telegram Webhook...");
+      return await callTelegramAPI(token, "deleteWebhook", {});
     }
-  } catch (error: any) {
-    console.error('setWebhook failed:', error.message);
-    throw error;
+  } catch (err: any) {
+    console.error("setupTelegramWebhook failed:", err.message);
+    throw err;
   }
 }
 
-// ─── Gemini History Sanitizer ────────────────────────────────────────────────
-function sanitizeChatHistory(history: { role: string; parts: { text: string }[] }[]) {
-  const sanitized: { role: string; parts: { text: string }[] }[] = [];
-  for (const turn of history) {
-    if (sanitized.length > 0 && sanitized[sanitized.length - 1].role === turn.role) {
-      sanitized[sanitized.length - 1].parts[0].text += '\n' + turn.parts[0].text;
-    } else {
-      sanitized.push({ role: turn.role, parts: [{ text: turn.parts[0].text }] });
-    }
-  }
-  return sanitized;
-}
-
-// ─── Core Message Processor ──────────────────────────────────────────────────
-async function processIncomingMessage(db: any, userId: string, username: string, fullName: string, text: string, isSimulated: boolean) {
-  // 1. Register / update user
-  let user = db.users.find((u: TelegramUser) => u.id === userId);
-  if (!user) {
-    user = { id: userId, first_name: fullName, username: username || '', last_interaction: new Date().toISOString(), is_simulated: isSimulated };
-    db.users.push(user);
-    addLog(db, 'info', `مستخدم جديد: ${fullName} (@${username || 'بلا_اسم'})`);
-  } else {
-    user.last_interaction = new Date().toISOString();
-    user.first_name = fullName;
-    user.username = username || '';
-  }
-
-  // 2. Save incoming message
-  const incomingMsg: BotMessage = {
-    id: `msg_${Date.now()}_in`, userId, username: username || 'user',
-    text, type: 'incoming', sender: 'user', timestamp: new Date().toISOString()
-  };
-  db.messages.push(incomingMsg);
-
-  // 3. Match auto-response rule
-  const cleanText = text.trim();
-  const matchedRule = db.settings.autoResponses.find((rule: AutoResponse) =>
-    rule.trigger.toLowerCase() === cleanText.toLowerCase()
-  );
-
-  if (matchedRule) {
-    const outgoingMsg: BotMessage = {
-      id: `msg_${Date.now()}_out`, userId, username: username || 'user',
-      text: matchedRule.response, type: 'outgoing', sender: 'bot_rule',
-      timestamp: new Date().toISOString(), ruleId: matchedRule.id,
-      buttons: matchedRule.buttons, buttonType: matchedRule.buttonType || 'inline',
-      buttonColumns: matchedRule.buttonColumns || 1
-    };
-    db.messages.push(outgoingMsg);
-
-    let replyMarkup: any = undefined;
-    if (matchedRule.buttons && matchedRule.buttons.length > 0) {
-      const bType = matchedRule.buttonType || 'inline';
-      const colCount = matchedRule.buttonColumns || 1;
-      if (bType === 'reply') {
-        const keyboardRows: any[] = [];
-        for (let i = 0; i < matchedRule.buttons.length; i += colCount) {
-          keyboardRows.push(matchedRule.buttons.slice(i, i + colCount).map((btn: any) => ({ text: btn.label })));
-        }
-        replyMarkup = { keyboard: keyboardRows, resize_keyboard: true, one_time_keyboard: false };
-      } else {
-        const inlineRows: any[] = [];
-        for (let i = 0; i < matchedRule.buttons.length; i += colCount) {
-          inlineRows.push(matchedRule.buttons.slice(i, i + colCount).map((btn: any) => ({
-            text: btn.label, callback_data: `btn:${matchedRule.id}:${btn.id}`
-          })));
-        }
-        replyMarkup = { inline_keyboard: inlineRows };
-      }
-    }
-
-    if (!isSimulated && db.settings.token) {
-      try {
-        await sendTelegramMessage(db.settings.token, userId, matchedRule.response, replyMarkup);
-        addLog(db, 'success', `رد تلقائي أُرسل إلى ${fullName}`);
-      } catch (err: any) {
-        addLog(db, 'error', `فشل إرسال الرد التلقائي لـ ${fullName}: ${err.message}`);
-      }
-    } else {
-      addLog(db, 'info', `[محاكاة] رد تلقائي: (${cleanText})`);
-    }
-
-    saveDatabase(db);
-    return outgoingMsg;
-  }
-
-  // 4. Gemini AI fallback
-  if (db.settings.aiEnabled) {
-    addLog(db, 'info', `Gemini AI يعالج رد لـ ${fullName}...`);
-    const ai = getGeminiClient();
-    let aiResponseText = '';
-
-    if (!ai) {
-      aiResponseText = '⚠️ لم يتم ضبط مفتاح Gemini API. يرجى مراجعة الإعدادات.';
-      addLog(db, 'warn', 'GEMINI_API_KEY غير مضبوط.');
-    } else {
-      try {
-        const rawHistory = db.messages
-          .filter((m: BotMessage) => m.userId === userId)
-          .slice(-10)
-          .map((m: BotMessage) => ({ role: m.type === 'incoming' ? 'user' : 'model', parts: [{ text: m.text }] }));
-        const userHistory = sanitizeChatHistory(rawHistory);
-        const systemInstruction = db.settings.aiSystemPrompt || 'أنت مساعد تواصل ذكي لبوت تليجرام.';
-        const responseObj = await ai.models.generateContent({
-          model: 'gemini-2.0-flash',
-          contents: userHistory,
-          config: { systemInstruction }
-        });
-        aiResponseText = responseObj.text || 'لم يتمكن Gemini من صياغة إجابة حالياً.';
-        addLog(db, 'success', `رد Gemini لـ ${fullName} تم بنجاح.`);
-      } catch (err: any) {
-        console.error('Gemini call failed:', err);
-        aiResponseText = 'وصلنا استفسارك، سنرد عليك يدوياً قريباً. شكراً لتفهمك.';
-        addLog(db, 'error', `فشل Gemini API: ${err.message}`);
-      }
-    }
-
-    const outgoingMsg: BotMessage = {
-      id: `msg_${Date.now()}_out`, userId, username: username || 'user',
-      text: aiResponseText, type: 'outgoing', sender: 'ai', timestamp: new Date().toISOString()
-    };
-    db.messages.push(outgoingMsg);
-
-    if (!isSimulated && db.settings.token) {
-      try {
-        await sendTelegramMessage(db.settings.token, userId, aiResponseText);
-      } catch (err: any) {
-        addLog(db, 'error', `فشل إرسال رد Gemini لـ ${fullName}: ${err.message}`);
-      }
-    }
-
-    saveDatabase(db);
-    return outgoingMsg;
-  }
-
-  // 5. Default fallback
-  const defaultReply = 'تم استلام رسالتك! سيتواصل معك مشرف خدمة العملاء في أقرب وقت.';
-  const fallbackMsg: BotMessage = {
-    id: `msg_${Date.now()}_out`, userId, username: username || 'user',
-    text: defaultReply, type: 'outgoing', sender: 'bot_manual', timestamp: new Date().toISOString()
-  };
-  db.messages.push(fallbackMsg);
-
-  if (!isSimulated && db.settings.token) {
-    try {
-      await sendTelegramMessage(db.settings.token, userId, defaultReply);
-    } catch (err: any) {
-      addLog(db, 'error', `فشل الرد الافتراضي لـ ${fullName}: ${err.message}`);
-    }
-  }
-
-  saveDatabase(db);
-  return fallbackMsg;
-}
-
-// ─── API Routes ───────────────────────────────────────────────────────────────
-
-app.get('/api/settings', (req, res) => {
-  const db = loadDatabase();
-  const host = req.get('host');
-  const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-  let appUrl = process.env.APP_URL || '';
-  if (!appUrl || appUrl === 'MY_APP_URL' || !appUrl.startsWith('http')) {
-    appUrl = host ? `${protocol}://${host}` : '';
-  }
-  res.json({ settings: db.settings, appUrl });
-});
-
-app.post('/api/settings', async (req, res) => {
-  const db = loadDatabase();
-  const { token, webhookEnabled, aiEnabled, aiSystemPrompt, autoResponses, adminPassword } = req.body;
-
-  if (token !== undefined) db.settings.token = token;
-  if (webhookEnabled !== undefined) db.settings.webhookEnabled = webhookEnabled;
-  if (aiEnabled !== undefined) db.settings.aiEnabled = aiEnabled;
-  if (aiSystemPrompt !== undefined) db.settings.aiSystemPrompt = aiSystemPrompt;
-  if (autoResponses !== undefined) db.settings.autoResponses = autoResponses;
-  if (adminPassword !== undefined) db.settings.adminPassword = adminPassword;
-
-  addLog(db, 'info', 'تم تحديث إعدادات البوت.');
-
-  if (db.settings.token) {
-    try {
-      const host = req.get('host');
-      const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-      let appUrl = process.env.APP_URL || '';
-      if (!appUrl || appUrl === 'MY_APP_URL' || !appUrl.startsWith('http')) {
-        appUrl = host ? `${protocol}://${host}` : '';
-      }
-      if (appUrl) {
-        await setupTelegramWebhook(db.settings.token, db.settings.webhookEnabled, appUrl);
-        addLog(db, 'success', `Webhook ${db.settings.webhookEnabled ? 'مفعّل' : 'معطّل'} على: ${appUrl}/api/webhook/telegram`);
-      } else {
-        addLog(db, 'warn', 'تعذر تهيئة Webhook: رابط التطبيق غير محدد.');
-      }
-    } catch (err: any) {
-      addLog(db, 'error', `فشل ربط Webhook: ${err.message}`);
-    }
-  }
-
-  saveDatabase(db);
-  res.json({ success: true, settings: db.settings });
-});
-
-app.get('/api/bot-info', async (req, res) => {
-  const db = loadDatabase();
-  if (!db.settings.token) return res.status(400).json({ status: 'error', message: 'لم يتم إدخال Bot Token بعد.' });
+// ─── Telegram Update Handler ───────────────────────────────────────────────
+async function handleTelegramUpdate(update: any) {
   try {
-    const me = await callTelegramAPI(db.settings.token, 'getMe', {});
-    const webhookInfoRes = await callTelegramAPI(db.settings.token, 'getWebhookInfo', {});
-    res.json({
-      status: 'success',
-      bot: { id: me.result.id, first_name: me.result.first_name, username: me.result.username },
-      webhook: webhookInfoRes.result
-    });
-  } catch (error: any) {
-    res.status(500).json({ status: 'error', message: error.message });
-  }
-});
+    const settings = await db.getSettings();
+    if (!settings.botToken) return;
 
-app.get('/api/users', (req, res) => {
-  const db = loadDatabase();
-  res.json(db.users);
-});
-
-app.get('/api/messages', (req, res) => {
-  const db = loadDatabase();
-  const userId = req.query.userId as string;
-  res.json(userId ? db.messages.filter((m: BotMessage) => m.userId === userId) : db.messages);
-});
-
-app.post('/api/messages/reply', async (req, res) => {
-  const db = loadDatabase();
-  const { userId, text } = req.body;
-  if (!userId || !text) return res.status(400).json({ error: 'مطلوب userId ونص الرسالة.' });
-  const user = db.users.find((u: TelegramUser) => u.id === userId);
-  if (!user) return res.status(404).json({ error: 'المستخدم غير موجود.' });
-
-  const outgoingMsg: BotMessage = {
-    id: `msg_${Date.now()}_reply`, userId, username: user.username || 'user',
-    text, type: 'outgoing', sender: 'bot_manual', timestamp: new Date().toISOString()
-  };
-  db.messages.push(outgoingMsg);
-  addLog(db, 'info', `رد يدوي إلى ${user.first_name}: ${text.substring(0, 30)}...`);
-
-  if (!user.is_simulated && db.settings.token) {
-    try {
-      await sendTelegramMessage(db.settings.token, userId, text);
-      addLog(db, 'success', `تم إرسال الرد اليدوي إلى ${user.first_name}.`);
-    } catch (err: any) {
-      addLog(db, 'error', `فشل إرسال الرد اليدوي لـ ${user.first_name}: ${err.message}`);
+    // 1. Check for Callback Query (Plan selection buttons)
+    if (update.callback_query) {
+      const cb = update.callback_query;
+      const from = cb.from || {};
+      const data = cb.data || '';
+      const userIdStr = from.id?.toString();
+      const chat = cb.message?.chat || {};
+      const chatIdStr = chat.id?.toString() || userIdStr;
+      
+      if (!chatIdStr) return;
+      
+      if (data.startsWith('select_plan:')) {
+        const planId = data.replace('select_plan:', '');
+        const menus = await db.getMenus();
+        const menu = menus.find((m) => m.id === planId);
+        
+        if (menu) {
+          // Update Session
+          const session = await db.getSession(userIdStr);
+          session.step = "awaiting_info";
+          session.selectedPlanId = planId;
+          await db.saveSession(session);
+          
+          try {
+            // Acknowledge the callback query
+            await callTelegramAPI(settings.botToken, 'answerCallbackQuery', { callback_query_id: cb.id });
+            
+            // Send details and prompt for email
+            await sendTelegramMessage(settings.botToken, chatIdStr, menu.details || `باقة ${menu.title}\nالسعر: ${menu.price}`);
+          } catch (e: any) {
+            console.error("Callback select_plan handler failed:", e.message);
+          }
+        }
+      }
+      return;
     }
-  } else {
-    addLog(db, 'info', `[محاكاة] تم حفظ الرد اليدوي.`);
-  }
 
-  saveDatabase(db);
-  res.json({ success: true, message: outgoingMsg });
-});
-
-app.post('/api/messages/simulate', async (req, res) => {
-  const db = loadDatabase();
-  const { userId, first_name, username, text } = req.body;
-  if (!userId || !text) return res.status(400).json({ error: 'عناصر المحاكاة غير مكتملة.' });
-  const botReply = await processIncomingMessage(db, userId, username || 'ahmed_sim', first_name || 'أحمد', text, true);
-  res.json({ success: true, incoming: db.messages[db.messages.length - 2], reply: botReply });
-});
-
-app.post('/api/messages/broadcast', async (req, res) => {
-  const db = loadDatabase();
-  const { text } = req.body;
-  if (!text) return res.status(400).json({ error: 'نص البث فارغ!' });
-  if (db.users.length === 0) return res.status(400).json({ error: 'لا يوجد مستخدمون مسجلون.' });
-
-  addLog(db, 'info', `بدء بث جماعي: "${text.substring(0, 40)}..."`);
-  let sentReal = 0, sentSim = 0, failedReal = 0;
-
-  for (const user of db.users) {
-    db.messages.push({
-      id: `msg_${Date.now()}_bct_${user.id}`, userId: user.id,
-      username: user.username || 'user', text, type: 'outgoing',
-      sender: 'bot_manual', timestamp: new Date().toISOString()
-    } as BotMessage);
-    if (!user.is_simulated && db.settings.token) {
-      try { await sendTelegramMessage(db.settings.token, user.id, text); sentReal++; }
-      catch { failedReal++; }
-    } else { sentSim++; }
-  }
-
-  const resultMsg = `اكتمل البث لـ ${sentReal + sentSim} مستخدم. (حقيقي: ${sentReal}، محاكاة: ${sentSim}، فشل: ${failedReal})`;
-  db.broadcasts.push({ id: `bct_${Date.now()}`, text, timestamp: new Date().toISOString(), recipientCount: sentReal + sentSim } as BroadcastLog);
-  addLog(db, 'success', resultMsg);
-  saveDatabase(db);
-  res.json({ success: true, summary: resultMsg });
-});
-
-app.get('/api/logs', (req, res) => {
-  const db = loadDatabase();
-  res.json(db.logs);
-});
-
-app.delete('/api/users/:id', (req, res) => {
-  const db = loadDatabase();
-  const userId = req.params.id;
-  db.users = db.users.filter((u: TelegramUser) => u.id !== userId);
-  db.messages = db.messages.filter((m: BotMessage) => m.userId !== userId);
-  addLog(db, 'warn', `تم حذف المستخدم: ${userId}`);
-  saveDatabase(db);
-  res.json({ success: true });
-});
-
-app.post('/api/messages/simulate-click', async (req, res) => {
-  const db = loadDatabase();
-  const { userId, ruleId, buttonId, first_name, username } = req.body;
-  if (!userId || !ruleId || !buttonId) return res.status(400).json({ error: 'عناصر النقر غير مكتملة.' });
-
-  const rule = db.settings.autoResponses.find((r: any) => r.id === ruleId);
-  if (!rule?.buttons) return res.status(404).json({ error: 'القاعدة غير موجودة.' });
-
-  const button = rule.buttons.find((b: any) => b.id === buttonId);
-  if (!button) return res.status(404).json({ error: 'الزر غير موجود.' });
-
-  const targetName = first_name || 'أحمد';
-  const targetUser = username || 'ahmed_sim';
-
-  let user = db.users.find((u: TelegramUser) => u.id === userId);
-  if (!user) {
-    user = { id: userId, first_name: targetName, username: targetUser, last_interaction: new Date().toISOString(), is_simulated: true };
-    db.users.push(user);
-  } else { user.last_interaction = new Date().toISOString(); }
-
-  const incomingMsg: BotMessage = {
-    id: `msg_${Date.now()}_in`, userId, username: targetUser,
-    text: `🔘 [اختيار]: ${button.label}`, type: 'incoming', sender: 'user', timestamp: new Date().toISOString()
-  };
-  const outgoingMsg: BotMessage = {
-    id: `msg_${Date.now()}_out`, userId, username: targetUser,
-    text: button.responseText, type: 'outgoing', sender: 'bot_rule', timestamp: new Date().toISOString()
-  };
-  db.messages.push(incomingMsg, outgoingMsg);
-  addLog(db, 'info', `[محاكاة] نقر زر: "${button.label}"`);
-  addLog(db, 'success', `[محاكاة] رد: "${button.responseText.substring(0, 30)}..."`);
-  saveDatabase(db);
-  res.json({ success: true, incoming: incomingMsg, reply: outgoingMsg });
-});
-
-// ─── Webhook & Callback Handler ──────────────────────────────────────────────
-async function handleCallbackQuery(db: any, cb: any) {
-  const from = cb.from || {};
-  const data = cb.data || '';
-  const userIdStr = from.id?.toString();
-  if (!userIdStr || (!data.startsWith('btn:') && !data.startsWith('btn_'))) return;
-
-  let ruleId = '', btnId = '';
-  if (data.startsWith('btn:')) {
-    const parts = data.split(':');
-    ruleId = parts[1]; btnId = parts[2];
-  } else {
-    const parts = data.split('_');
-    ruleId = parts[1]; btnId = parts[2];
-  }
-
-  const rule = db.settings.autoResponses.find((r: any) => r.id === ruleId);
-  if (!rule?.buttons) return;
-  const button = rule.buttons.find((b: any) => b.id === btnId);
-  if (!button) return;
-
-  const fullName = [from.first_name, from.last_name || ''].filter(Boolean).join(' ') || 'مستخدم';
-  const username = from.username || '';
-
-  let user = db.users.find((u: TelegramUser) => u.id === userIdStr);
-  if (!user) {
-    user = { id: userIdStr, first_name: fullName, username, last_interaction: new Date().toISOString(), is_simulated: false };
-    db.users.push(user);
-    addLog(db, 'info', `مستخدم جديد عبر زر: ${fullName}`);
-  } else { user.last_interaction = new Date().toISOString(); }
-
-  db.messages.push(
-    { id: `msg_${Date.now()}_in`, userId: userIdStr, username: username || 'user', text: `🔘 [اختيار]: ${button.label}`, type: 'incoming', sender: 'user', timestamp: new Date().toISOString() } as BotMessage,
-    { id: `msg_${Date.now()}_out`, userId: userIdStr, username: username || 'user', text: button.responseText, type: 'outgoing', sender: 'bot_rule', timestamp: new Date().toISOString() } as BotMessage
-  );
-  addLog(db, 'success', `زر "${button.label}" → رد أُرسل لـ ${fullName}`);
-  saveDatabase(db);
-
-  if (db.settings.token) {
-    try {
-      await callTelegramAPI(db.settings.token, 'answerCallbackQuery', { callback_query_id: cb.id });
-      await sendTelegramMessage(db.settings.token, userIdStr, button.responseText);
-    } catch (err: any) {
-      console.error('Callback handler error:', err.message);
+    // 2. Check for Incoming Message
+    if (update.message) {
+      const msg = update.message;
+      const from = msg.from || {};
+      const chat = msg.chat || {};
+      const chatIdStr = chat.id?.toString();
+      const text = msg.text || '';
+      const photos = msg.photo || [];
+      const document = msg.document;
+      
+      if (!chatIdStr) return;
+      
+      const fullname = [from.first_name || '', from.last_name || ''].filter(Boolean).join(' ') || "مستخدم تلغرام";
+      const username = from.username || "";
+      
+      // Get or initialize User Session
+      const session = await db.getSession(chatIdStr);
+      
+      // Check for /start or /help command
+      if (text.trim().toLowerCase() === '/start') {
+        session.step = "idle";
+        session.selectedPlanId = "";
+        await db.saveSession(session);
+        
+        const menus = await db.getMenus();
+        const inlineKeyboard: any[] = [];
+        
+        for (const menu of menus) {
+          inlineKeyboard.push([{
+            text: `🟢 ${menu.title} (${menu.price})`,
+            callback_data: `select_plan:${menu.id}`
+          }]);
+        }
+        
+        const welcomeText = settings.welcomeMessage || "🏥 مرحباً بك في مساعد تفعيل باقات ميدكيت!";
+        await sendTelegramMessage(settings.botToken, chatIdStr, welcomeText, {
+          inline_keyboard: inlineKeyboard
+        });
+        return;
+      }
+      
+      // Log all conversations to Support Messages so admin can check and chat manually
+      let photoUrl = "";
+      if (photos.length > 0) {
+        try {
+          const fileId = photos[photos.length - 1].file_id;
+          const fileInfo = await callTelegramAPI(settings.botToken, "getFile", { file_id: fileId });
+          if (fileInfo?.result?.file_path) {
+            photoUrl = `https://api.telegram.org/file/bot${settings.botToken}/${fileInfo.result.file_path}`;
+          }
+        } catch (e) {
+          console.error("Failed to parse message photo for support logs:", e);
+        }
+      } else if (document) {
+        try {
+          const fileId = document.file_id;
+          const fileInfo = await callTelegramAPI(settings.botToken, "getFile", { file_id: fileId });
+          if (fileInfo?.result?.file_path) {
+            photoUrl = `https://api.telegram.org/file/bot${settings.botToken}/${fileInfo.result.file_path}`;
+          }
+        } catch (e) {
+          console.error("Failed to parse document for support logs:", e);
+        }
+      }
+      
+      const supportMsg: SupportMessage = {
+        id: `supp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        telegramUserId: chatIdStr,
+        telegramUsername: username,
+        telegramName: fullname,
+        messageText: text || (photos.length > 0 ? "[أرسل إثبات تحويل كصورة]" : "[أرسل مستند]"),
+        messagePhotoUrl: photoUrl || undefined,
+        createdAt: new Date().toISOString(),
+        replied: false
+      };
+      await db.saveSupportMessage(supportMsg);
+      
+      // State Machine handling
+      if (session.step === "awaiting_info") {
+        session.email = text.trim();
+        session.step = "awaiting_receipt";
+        await db.saveSession(session);
+        
+        const promptReceipt = `عظيم! لقد قمنا بتسجيل بريدك الإلكتروني بنجاح: <b>${text.trim()}</b>\n\nيرجى الآن إرفاق وإرسال صورة واضحة لإثبات التحويل (لقطة الشاشة للتحويل بالكامل أو الإيصال) ليتم إرسال طلبك فوراً لمراجعة الإدارة وتفعيل اشتراكك بالمنصة. 📸🧾`;
+        await sendTelegramMessage(settings.botToken, chatIdStr, promptReceipt);
+        return;
+      }
+      
+      if (session.step === "awaiting_receipt") {
+        if (photos.length > 0 || photoUrl) {
+          try {
+            // Get Plan Detail
+            const menus = await db.getMenus();
+            const pId = session.selectedPlanId || "m";
+            const menu = menus.find((m) => m.id === pId) || { title: "باقة ميدكيت مخصصة" };
+            
+            // Create a Ticket
+            const ticketId = `tkt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+            const ticket: any = {
+              id: ticketId,
+              telegramUserId: chatIdStr,
+              telegramUsername: username,
+              telegramName: fullname,
+              userId: chatIdStr,
+              username: username,
+              fullName: fullname,
+              email: session.email || "",
+              menuId: pId,
+              menuTitle: menu.title,
+              receiptPhotoUrl: photoUrl,
+              transactionImage: photoUrl,
+              status: "new",
+              adminComment: "",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+            
+            await db.saveTicket(ticket as any);
+            
+            // Reset Session
+            session.step = "idle";
+            session.selectedPlanId = "";
+            await db.saveSession(session);
+            
+            const successMsg = `تم استقبال إثبات التحويل بنجاح! 🎉\n\nلقد أرسلنا طلبك المرفق للمشرفين لمراجعته وتفعيله. سيصلك إشعار فوري هنا على تيليجرام فور الموافقة والتفعيل! 👍`;
+            await sendTelegramMessage(settings.botToken, chatIdStr, successMsg);
+            
+            // Notify Admin
+            if (settings.adminChatId) {
+              await sendTelegramMessage(settings.botToken, settings.adminChatId, `🔔 <b>طلب تفعيل واشتراك جديد!</b>\n\n👤 العميل: <b>${fullname}</b> (@${username})\n✉️ الايميل: ${ticket.email}\n📦 الباقة: <b>${menu.title}</b>\n\nيرجى فتح لوحة التحكم لمراجعة الطلب والموافقة عليه.`);
+            }
+          } catch (err: any) {
+            console.error("Failed to process transaction receipt photo:", err.message);
+            await sendTelegramMessage(settings.botToken, chatIdStr, "⚠️ حدث خطأ أثناء معالجة الصورة وإرسالها للإدارة. يرجى محاولة إرسال الصورة بشكل صحيح مرة أخرى.");
+          }
+          return;
+        } else {
+          await sendTelegramMessage(settings.botToken, chatIdStr, "⚠️ يرجى إرسال صورة إثبات تحويل المبلغ (كلفتة شاشة أو صورة إيصال واضحة) للمواصلة وتفعيل الباقة.");
+          return;
+        }
+      }
+      
+      const replyFallback = "أهلاً بك! لعرض خطط الأسعار والاشتراكات المتاحة وتفعيل الإشتراك، يرجى كتابة أو الضغط على /start .";
+      await sendTelegramMessage(settings.botToken, chatIdStr, replyFallback);
     }
+  } catch (e: any) {
+    console.error("Critical error in handleTelegramUpdate loop:", e.message);
   }
 }
 
-app.post('/api/webhook/telegram', async (req, res) => {
-  const db = loadDatabase();
-  const update = req.body;
-  res.status(200).send('OK');
-  if (!update) return;
+// ─── API REST Endpoints ─────────────────────────────────────────────────────
 
-  if (update.callback_query) {
-    await handleCallbackQuery(db, update.callback_query);
-    return;
+// Get Settings
+app.get('/api/settings', async (req, res) => {
+  try {
+    const data = await db.getSettings();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-
-  if (!update.message) return;
-  const msg = update.message;
-  const from = msg.from;
-  const chatId = msg.chat?.id;
-  const text = msg.text;
-  if (!chatId || !text) return;
-
-  const userIdStr = chatId.toString();
-  const username = from.username || '';
-  const fullName = [from.first_name, from.last_name || ''].filter(Boolean).join(' ') || 'مستخدم';
-  addLog(db, 'info', `← Webhook: ${fullName} (@${username}): "${text.substring(0, 30)}"`);
-  await processIncomingMessage(db, userIdStr, username, fullName, text, false);
 });
 
-// ─── Long Polling ─────────────────────────────────────────────────────────────
+// Update Settings
+app.post('/api/settings', async (req, res) => {
+  try {
+    const { botToken, adminChatId, welcomeMessage, dashboardPassword, devPollingEnabled } = req.body;
+    const settings = await db.getSettings();
+    
+    if (botToken !== undefined) settings.botToken = botToken;
+    if (adminChatId !== undefined) settings.adminChatId = adminChatId;
+    if (welcomeMessage !== undefined) settings.welcomeMessage = welcomeMessage;
+    if (dashboardPassword !== undefined) settings.dashboardPassword = dashboardPassword;
+    if (devPollingEnabled !== undefined) settings.devPollingEnabled = devPollingEnabled;
+    
+    await db.saveSettings(settings);
+    res.json(settings);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Menus
+app.get('/api/menus', async (req, res) => {
+  try {
+    const menus = await db.getMenus();
+    res.json(menus);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Save Menu
+app.post('/api/menus', async (req, res) => {
+  try {
+    const menu = req.body;
+    await db.saveMenu(menu);
+    res.json({ success: true, menu });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete Menu
+app.delete('/api/menus/:id', async (req, res) => {
+  try {
+    await db.deleteMenu(req.params.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Tickets
+app.get('/api/tickets', async (req, res) => {
+  try {
+    const tickets = await db.getTickets();
+    res.json(tickets);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete Ticket
+app.delete('/api/tickets/:id', async (req, res) => {
+  try {
+    await db.deleteTicket(req.params.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get Support Messages
+app.get('/api/support-messages', async (req, res) => {
+  try {
+    const messages = await db.getSupportMessages();
+    res.json(messages);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete Support Message
+app.delete('/api/support-messages/:id', async (req, res) => {
+  try {
+    await db.deleteSupportMessage(req.params.id);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Reply Support Message on Telegram
+app.post('/api/support-messages/reply', async (req, res) => {
+  try {
+    const { messageId, replyText } = req.body;
+    const messages = await db.getSupportMessages();
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg) {
+      return res.status(404).json({ error: "الرسالة غير موجودة بالخادم" });
+    }
+    
+    const settings = await db.getSettings();
+    if (!settings.botToken) {
+      return res.status(400).json({ error: "يرجى تهيئة توكن البوت في الإعدادات أولاً." });
+    }
+    
+    // Send Telegram message
+    await sendTelegramMessage(settings.botToken, msg.telegramUserId, replyText);
+    
+    // Update DB record
+    msg.replied = true;
+    msg.replyText = replyText;
+    msg.repliedAt = new Date().toISOString();
+    await db.saveSupportMessage(msg);
+    
+    res.json({ success: true, message: msg });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "فشل إرسال الرد للعميل" });
+  }
+});
+
+// Accept/Reject Ticket & Notify user
+app.post('/api/admin/reply', async (req, res) => {
+  try {
+    const { ticketId, replyMessage, newStatus } = req.body;
+    const ticket = await db.getTicket(ticketId);
+    if (!ticket) {
+      return res.status(404).json({ error: "الطلب غير موجود بالخادم" });
+    }
+    
+    const settings = await db.getSettings();
+    if (!settings.botToken) {
+      return res.status(400).json({ error: "يرجى تهيئة توكن البوت في الإعدادات أولاً." });
+    }
+    
+    // Update ticket status
+    ticket.status = newStatus;
+    ticket.adminComment = replyMessage;
+    ticket.updatedAt = new Date().toISOString();
+    await db.saveTicket(ticket);
+    
+    // Notify Telegram user if possible
+    if (ticket.telegramUserId) {
+      let textMsg = "";
+      if (newStatus === "approved") {
+        textMsg = `🎉 <b>تم قبول والموافقة على طلب تفعيل الباقة (${ticket.menuTitle}) الخاص بك بنجاح!</b>\n\nيسعدنا انضمامك وتفعيله في المنصة. 🏥✨ \n\n📝 <b>ملاحظة الإدارة:</b> ${replyMessage}`;
+      } else if (newStatus === "rejected") {
+        textMsg = `❌ <b>معذرةً، تم رفض طلب التفعيل لعدم استيفاء الشروط.</b>\n\n📝 <b>السبب وملاحظة الإدارة:</b> ${replyMessage}\n\nيرجى إعادة تقديم الطلب ببيانات وصورة صحيحة أو التواصل معنا.`;
+      } else {
+        textMsg = `🔔 <b>تحديث من الإدارة بخصوص طلب التفعيل الخاص بك:</b>\n\n${replyMessage}`;
+      }
+      await sendTelegramMessage(settings.botToken, ticket.telegramUserId, textMsg);
+    }
+    
+    res.json({ success: true, ticket });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "فشل تحديث حالة الطلب" });
+  }
+});
+
+// Get Telegram integration status checks
+app.get('/api/telegram-status', async (req, res) => {
+  try {
+    const settings = await db.getSettings();
+    const hasToken = !!settings.botToken;
+    
+    let webhookInfo = null;
+    let botUser = null;
+    
+    if (hasToken) {
+      try {
+        const meRes = await callTelegramAPI(settings.botToken, "getMe", {});
+        if (meRes?.result) {
+          botUser = meRes.result;
+        }
+        
+        const webhookRes = await callTelegramAPI(settings.botToken, "getWebhookInfo", {});
+        if (webhookRes?.result) {
+          webhookInfo = webhookRes.result;
+        }
+      } catch (e: any) {
+        console.error("Failed to dynamically fetch Telegram stats for bot info:", e.message);
+      }
+    }
+    
+    const activeInstances = await db.getActiveInstances();
+    
+    res.json({
+      configured: hasToken,
+      botUser,
+      instanceId,
+      isPollingActive: pollingActive && settings.devPollingEnabled !== false,
+      masterInstanceId: settings.masterInstanceId || instanceId,
+      devPollingEnabled: settings.devPollingEnabled !== false,
+      activeInstances,
+      webhookInfo
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Configure Bot Webhook
+app.post('/api/setup-webhook', async (req, res) => {
+  try {
+    const settings = await db.getSettings();
+    if (!settings.botToken) {
+      return res.status(400).json({ error: "يرجى تهيئة توكن البوت في الإعدادات أولاً." });
+    }
+    
+    const host = req.get('host');
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    let appUrl = process.env.APP_URL || '';
+    if (!appUrl || appUrl === 'MY_APP_URL' || !appUrl.startsWith('http')) {
+      appUrl = host ? `${protocol}://${host}` : '';
+    }
+    
+    if (!appUrl) {
+      return res.status(400).json({ error: "تعذر تحديد رابط خادم الويب هوك الخاص بك." });
+    }
+    
+    settings.activeInstanceUrl = appUrl;
+    await db.saveSettings(settings);
+    
+    const result = await setupTelegramWebhook(settings.botToken, true, appUrl);
+    res.json({ success: true, result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "حدث خطأ أثناء تفعيل الويب هوك" });
+  }
+});
+
+// Disable/Remove Bot Webhook
+app.post('/api/remove-webhook', async (req, res) => {
+  try {
+    const settings = await db.getSettings();
+    settings.activeInstanceUrl = "";
+    await db.saveSettings(settings);
+    
+    if (settings.botToken) {
+      await setupTelegramWebhook(settings.botToken, false, "");
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "فشل إيقاف الويب هوك" });
+  }
+});
+
+// Toggle Polling
+app.post('/api/polling/toggle', async (req, res) => {
+  try {
+    const { enabled, claimMaster } = req.body;
+    const settings = await db.getSettings();
+    
+    settings.devPollingEnabled = enabled;
+    if (claimMaster) {
+      settings.masterInstanceId = instanceId;
+    }
+    
+    await db.saveSettings(settings);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Incoming Telegram Webhook
+app.post('/api/webhook/telegram', async (req, res) => {
+  try {
+    const update = req.body;
+    // Send 200 OK immediately to Telegram to prevent retry timeouts
+    res.status(200).send('OK');
+    
+    if (update) {
+      await handleTelegramUpdate(update);
+    }
+  } catch (err: any) {
+    console.error("Webhook processing error:", err.message);
+  }
+});
+
+// ─── Long Polling Executor ───────────────────────────────────────────────────
 let pollingActive = false;
 let lastUpdateId = 0;
 
-async function runPolling() {
+async function runLongPolling() {
   if (pollingActive) return;
   pollingActive = true;
-  console.log('Starting Long Polling service...');
+  console.log('MedKit Telegram Long Polling service started on thread.');
 
-  while (true) {
-    let token = '', webhookEnabled = false;
+  while (pollingActive) {
     try {
-      const db = loadDatabase();
-      token = db.settings.token;
-      webhookEnabled = db.settings.webhookEnabled;
-    } catch (e) {}
+      const settings = await db.getSettings();
+      
+      // Standby / sleep if token missing or devPollingEnabled is set to false
+      if (!settings.botToken || settings.devPollingEnabled === false) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        continue;
+      }
 
-    if (!token || webhookEnabled) {
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      continue;
-    }
+      // Try acquiring multi-instance authorization lock
+      const hasLock = await db.acquirePollingLock(instanceId);
+      if (!hasLock) {
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        continue;
+      }
 
-    try {
-      const response = await callTelegramAPI(token, 'getUpdates', {
-        offset: lastUpdateId + 1, limit: 50, timeout: 15
+      // Heartbeat self-register
+      await db.registerInstance(instanceId, {
+        url: process.env.APP_URL || "Railway Deployment",
+        lastSeen: Date.now()
       });
-      const updates = response.result || [];
-      for (const update of updates) {
-        lastUpdateId = Math.max(lastUpdateId, update.update_id);
-        const freshDb = loadDatabase();
-        if (update.callback_query) {
-          await handleCallbackQuery(freshDb, update.callback_query);
-        } else if (update.message?.text && update.message.chat?.id) {
-          const msg = update.message;
-          const from = msg.from || {};
-          const chatId = msg.chat.id.toString();
-          const fullName = [from.first_name, from.last_name || ''].filter(Boolean).join(' ') || 'مستخدم';
-          addLog(freshDb, 'info', `← Polling: ${fullName}: "${msg.text.substring(0, 30)}"`);
-          await processIncomingMessage(freshDb, chatId, from.username || '', fullName, msg.text, false);
+
+      const response = await callTelegramAPI(settings.botToken, 'getUpdates', {
+        offset: lastUpdateId + 1,
+        limit: 20,
+        timeout: 15
+      });
+
+      if (response && response.result) {
+        for (const update of response.result) {
+          lastUpdateId = Math.max(lastUpdateId, update.update_id);
+          
+          const claimed = await db.claimUpdate(update.update_id, instanceId);
+          if (claimed) {
+            await handleTelegramUpdate(update);
+          }
         }
       }
     } catch (err: any) {
-      console.error('Polling error:', err.message);
-      if (err.message?.includes('409') || err.message?.toLowerCase().includes('conflict')) {
+      console.error('Long Polling encountered an error:', err.message);
+      // Automatically self-heal conflict issues by dropping hook if a conflict (409) arises
+      if (err.message && (err.message.includes('409') || err.message.toLowerCase().includes('conflict'))) {
         try {
-          await callTelegramAPI(token, 'deleteWebhook', { drop_pending_updates: true });
-          const freshDb = loadDatabase();
-          addLog(freshDb, 'success', '🔧 تم حل تعارض Webhook تلقائياً.');
-          saveDatabase(freshDb);
-        } catch (delError: any) {
-          console.error('Failed to delete conflicting webhook:', delError.message);
+          const settings = await db.getSettings();
+          if (settings.botToken) {
+            await callTelegramAPI(settings.botToken, 'deleteWebhook', {});
+            console.log("Automatically deleted conflicting webhook to resume long polling successfully.");
+          }
+        } catch (whErr: any) {
+          console.error("Failed to delete conflicting webhook during self-healing:", whErr.message);
         }
       }
       await new Promise(resolve => setTimeout(resolve, 6000));
     }
-
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await new Promise(resolve => setTimeout(resolve, 600));
   }
 }
 
-// ─── Server Start ─────────────────────────────────────────────────────────────
+// ─── Server Start ────────────────────────────────────────────────────────────
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -639,8 +660,8 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`MedKit42 Bot Dashboard running on http://0.0.0.0:${PORT}`);
-    runPolling().catch(err => console.error('Polling service error:', err));
+    console.log(`MedKit Bot Management Server listening on http://0.0.0.0:${PORT}`);
+    runLongPolling().catch(err => console.error('Error starting long polling:', err.message));
   });
 }
 
