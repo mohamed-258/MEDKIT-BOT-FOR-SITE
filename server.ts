@@ -42,20 +42,31 @@ checkDatabaseStatus(firestore).catch((err) => console.error("Database status che
 // ─── Telegram API Helper ────────────────────────────────────────────────────
 async function callTelegramAPI(token: string, method: string, payload: any) {
   const url = `https://api.telegram.org/bot${token}/${method}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 seconds timeout
+  
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: controller.signal
     });
     const resData = await res.json();
+    clearTimeout(timeoutId);
+    
     if (!res.ok || !resData.ok) {
       throw new Error(resData.description || `HTTP ${res.status}`);
     }
     return resData;
   } catch (err: any) {
-    console.error(`Telegram API Call to ${method} failed:`, err.message);
-    throw err;
+    clearTimeout(timeoutId);
+    let errMsg = err.message;
+    if (err.name === 'AbortError') {
+      errMsg = "انتهاء مهلة الاتصال بخوادم تليجرام (8 ثوانٍ)";
+    }
+    console.error(`Telegram API Call to ${method} failed:`, errMsg);
+    throw new Error(errMsg);
   }
 }
 

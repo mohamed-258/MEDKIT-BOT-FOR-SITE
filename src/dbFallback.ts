@@ -165,27 +165,46 @@ function writeLocalDB(db: LocalDB) {
 let firestoreWorking = true;
 
 export async function checkDatabaseStatus(firestoreInstance: admin.firestore.Firestore): Promise<boolean> {
+  if (!firestoreInstance) {
+    console.warn("Database Link: Firestore instance is null or undefined. Overriding to local-db storage mode.");
+    firestoreWorking = false;
+    return false;
+  }
   try {
-    // Try to get setting/global with a longer timeout
+    // Try to get setting/global with a short 3-second timeout to avoid boot lag
     const testPromise = firestoreInstance.collection("settings").doc("global").get();
-    const timeoutPromise = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Firestore check timed out")), 15000));
+    const timeoutPromise = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("Firestore check timed out")), 3000));
     const snap = await Promise.race([testPromise, timeoutPromise]);
-    firestoreWorking = true; // operational if we got a response back
+    firestoreWorking = true; // operational if we got a response back without error
     console.log(`Database Link: FIRESTORE ACTIVE (operational=${firestoreWorking})`);
   } catch (err: any) {
-    console.error("Database Link: FIRESTORE CHECK ERROR:", err.message);
-    if (err.message === "Firestore check timed out") {
-      console.log("Will assume Firestore is working but slow.");
-      firestoreWorking = true;
-    } else if (err.code && (err.code === 7 || err.code === 16 || String(err.code).includes("PERMISSION_DENIED") || String(err.code).includes("UNAUTHENTICATED"))) {
-      console.log("Database Link: FIRESTORE RESTRICTED (using local JSON storage layer).", err);
-      firestoreWorking = false;
-    } else {
-      console.log("Assuming Firestore is working after catching unknown error:", err);
-      firestoreWorking = true;
-    }
+    console.error("Database Link: FIRESTORE CHECK ERROR:", err?.message || err);
+    console.warn("Database Link: Switching to LOCAL JSON storage fallback mode due to config/auth error or timeout.");
+    firestoreWorking = false;
   }
   return firestoreWorking;
+}
+
+// Global Firestore error parser for dynamic fallback
+function handleFirestoreError(err: any, context: string) {
+  console.error(`Database Link: Firestore error in [${context}]:`, err?.message || err);
+  if (!firestoreWorking) return; // already in fallback mode
+
+  const errMsg = String(err?.message || "").toLowerCase();
+  const errCode = err?.code;
+  
+  if (
+    errMsg.includes("credentials") || 
+    errMsg.includes("permission") || 
+    errMsg.includes("unauthenticated") || 
+    errMsg.includes("cannot read") ||
+    errMsg.includes("is not a function") ||
+    errCode === 7 || 
+    errCode === 16
+  ) {
+    console.warn("⚠️ Database Link: Automatically and dynamically switched to LOCAL JSON database fallback to ensure zero delay/lag on subsequent requests.");
+    firestoreWorking = false;
+  }
 }
 
 // Cache for claimed updates to avoid repeated LocalDB parsing
@@ -225,7 +244,7 @@ export class DatabaseController {
         return settings;
       }
     } catch (err: any) {
-      console.error("Firestore getSettings failed. Error:", err.message);
+      handleFirestoreError(err, "getSettings");
       const settings = readLocalDB().settings.global || DEFAULT_DB.settings.global;
       cachedSettings = settings;
       settingsCacheExpiry = now + 10000; // Error fallback cache
@@ -249,8 +268,7 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("settings").doc("global").set(cleanUndefined(settings), { merge: true });
     } catch (err: any) {
-      console.error("Firestore saveSettings failed:", err.message);
-      throw err;
+      handleFirestoreError(err, "saveSettings");
     }
   }
 
@@ -273,7 +291,7 @@ export class DatabaseController {
       console.log(`Firestore: Found ${list.length} menus.`);
       return list;
     } catch (err: any) {
-      console.error("Firestore getMenus failed. Error:", err.message);
+      handleFirestoreError(err, "getMenus");
       return Object.values(readLocalDB().menus);
     }
   }
@@ -288,8 +306,7 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("menus").doc(menu.id).set(cleanUndefined(menu));
     } catch (err: any) {
-      console.error("Firestore saveMenu failed:", err.message);
-      throw err;
+      handleFirestoreError(err, "saveMenu");
     }
   }
 
@@ -303,8 +320,7 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("menus").doc(id).delete();
     } catch (err: any) {
-      console.error("Firestore deleteMenu failed:", err.message);
-      throw err;
+      handleFirestoreError(err, "deleteMenu");
     }
   }
 
@@ -325,7 +341,7 @@ export class DatabaseController {
       });
       return list;
     } catch (err: any) {
-      console.error("Firestore getTickets failed:", err.message);
+      handleFirestoreError(err, "getTickets");
       return Object.values(readLocalDB().tickets).sort((a, b) => 
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
@@ -342,8 +358,7 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("tickets").doc(ticket.id).set(cleanUndefined(ticket));
     } catch (err: any) {
-      console.error("Firestore saveTicket failed:", err.message);
-      throw err;
+      handleFirestoreError(err, "saveTicket");
     }
   }
 
@@ -358,7 +373,7 @@ export class DatabaseController {
         return { id: snap.id, ...snap.data() } as Ticket;
       }
     } catch (err: any) {
-      console.error("Firestore getTicket failed:", err.message);
+      handleFirestoreError(err, "getTicket");
       return readLocalDB().tickets[id] || null;
     }
     return null;
@@ -374,8 +389,7 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("tickets").doc(id).delete();
     } catch (err: any) {
-      console.error("Firestore deleteTicket failed:", err.message);
-      throw err;
+      handleFirestoreError(err, "deleteTicket");
     }
   }
 
@@ -401,7 +415,7 @@ export class DatabaseController {
         return session;
       }
     } catch (err: any) {
-      console.error("Firestore getSession failed:", err.message);
+      handleFirestoreError(err, "getSession");
       const session = readLocalDB().sessions[userId] || { userId, step: "idle" };
       sessionCache.set(userId, { data: session, expiry: now + 5000 });
       return session;
@@ -422,8 +436,7 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("sessions").doc(session.userId).set(cleanUndefined(session));
     } catch (err: any) {
-      console.error("Firestore saveSession failed:", err.message);
-      throw err;
+      handleFirestoreError(err, "saveSession");
     }
   }
 
@@ -443,7 +456,7 @@ export class DatabaseController {
       });
       return list;
     } catch (err: any) {
-      console.error("Firestore getSupportMessages failed:", err.message);
+      handleFirestoreError(err, "getSupportMessages");
       return Object.values(readLocalDB().supportMessages || {}).sort((a, b) => 
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       );
@@ -461,8 +474,7 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("support_messages").doc(msg.id).set(cleanUndefined(msg));
     } catch (err: any) {
-      console.error("Firestore saveSupportMessage failed:", err.message);
-      throw err;
+      handleFirestoreError(err, "saveSupportMessage");
     }
   }
 
@@ -478,8 +490,7 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("support_messages").doc(id).delete();
     } catch (err: any) {
-      console.error("Firestore deleteSupportMessage failed:", err.message);
-      throw err;
+      handleFirestoreError(err, "deleteSupportMessage");
     }
   }
 
@@ -545,6 +556,7 @@ export class DatabaseController {
       if (err.code === 6 || (err.message && err.message.toLowerCase().includes("already exists"))) {
         return false;
       }
+      handleFirestoreError(err, "claimUpdate");
       return true; 
     }
   }
@@ -577,8 +589,8 @@ export class DatabaseController {
         updatedAt: new Date().toISOString()
       });
       return true;
-    } catch (err) {
-      console.error("Error acquiring polling lock:", err);
+    } catch (err: any) {
+      handleFirestoreError(err, "acquirePollingLock");
       return true; // Fallback to allowing polling on failure
     }
   }
@@ -591,7 +603,9 @@ export class DatabaseController {
       if (snap.exists && snap.data()?.instanceId === instanceId) {
         await lockRef.delete();
       }
-    } catch (err) {}
+    } catch (err: any) {
+      handleFirestoreError(err, "releasePollingLock");
+    }
   }
 
   /**
@@ -602,10 +616,12 @@ export class DatabaseController {
     try {
       await this.fsDb.collection("instances").doc(instanceId).set({
         ...metadata,
-        lastSeen: Date.now(),
+         lastSeen: Date.now(),
         updatedAt: new Date().toISOString()
       }, { merge: true });
-    } catch (err) {}
+    } catch (err: any) {
+      handleFirestoreError(err, "registerInstance");
+    }
   }
 
   async getActiveInstances(): Promise<any[]> {
@@ -616,6 +632,7 @@ export class DatabaseController {
       snap.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
       return list;
     } catch (err) {
+      handleFirestoreError(err, "getActiveInstances");
       return [];
     }
   }
