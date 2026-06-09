@@ -2,6 +2,8 @@ import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import fs from "fs";
 
+console.log("Environment keys:", Object.keys(process.env).filter(k => k.toLowerCase().includes("credentials") || k.toLowerCase().includes("google") || k.toLowerCase().includes("firebase") || k.toLowerCase().includes("sa") || k.toLowerCase().includes("key") || k.toLowerCase().includes("secret")));
+
 const firebaseConfig = JSON.parse(fs.readFileSync("firebase-applet-config.json", "utf-8"));
 const adminApp = admin.initializeApp({ projectId: firebaseConfig.projectId });
 const firestore = getFirestore(adminApp, firebaseConfig.firestoreDatabaseId);

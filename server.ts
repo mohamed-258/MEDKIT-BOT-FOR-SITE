@@ -144,6 +144,33 @@ function parseUserIdAndTicketId(text: string) {
   return { userId, ticketId };
 }
 
+async function sendWelcomeMenu(token: string, chatIdStr: string, settings: any, prefixText = "") {
+  try {
+    const menus = await db.getMenus();
+    const replyKeyboardButtons: any[][] = menus.map((menu) => ([{
+      text: "🫁 " + menu.title
+    }]));
+    replyKeyboardButtons.push([{ text: "💬 تواصل مع الدعم الفني" }]);
+
+    const welcomeText = (prefixText ? prefixText + "\n\n" : "") + 
+      (settings.welcomeMessage || "🏥 أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت (MedKit)!\n\n📋 اختر الباقة المناسبة لك من القائمة أدناه 👇");
+
+    await callTelegramAPI(token, "sendMessage", {
+      chat_id: chatIdStr,
+      text: welcomeText,
+      parse_mode: "HTML",
+      reply_markup: {
+        keyboard: replyKeyboardButtons,
+        resize_keyboard: true,
+        one_time_keyboard: false,
+        input_field_placeholder: "اختر باقة من القائمة..."
+      }
+    });
+  } catch (err: any) {
+    console.error("Failed to send welcome menu:", err.message);
+  }
+}
+
 // ─── Telegram Update Handler ───────────────────────────────────────────────
 async function handleTelegramUpdate(update: any) {
   try {
@@ -426,21 +453,21 @@ async function handleTelegramUpdate(update: any) {
                       }
                     }
                   } catch (e: any) {
-                    console.error("Failed to dismiss inline keyboards:", e.message);
+                    console.error("Failed to dismiss inline keyboards in handleTelegramUpdate reply_to:", e.message);
                   }
                 }
               }
-            } catch (err: any) {
-              console.error("Failed to send admin reply translation:", err.message);
+            } catch (e: any) {
+              console.error("Callback reply handler failed:", e.message);
             }
-            return; // Exit webhook so admin's reply text isn't treated as customer message
           }
+          return;
         }
       }
 
-      // Get or initialize User Session
+      // Get / Create Session
       const session = await db.getSession(chatIdStr);
-      
+
       // Check for cancel / back commands
       if (text.trim() === "❌ إلغاء الطلب" || text.trim().toLowerCase() === '/cancel' || text.trim() === "🔙 العودة للقائمة") {
         session.step = "idle";
@@ -448,12 +475,12 @@ async function handleTelegramUpdate(update: any) {
         session.email = "";
         await db.saveSession(session);
         
-        await callTelegramAPI(settings.botToken, "sendMessage", {
-          chat_id: chatIdStr,
-          text: "✅ تم إلغاء الطلب الحالي. يمكنك البدء من جديد واختيار باقة أخرى بالضغط على /start",
-          parse_mode: "HTML",
-          reply_markup: { remove_keyboard: true }
-        });
+        await sendWelcomeMenu(
+          settings.botToken,
+          chatIdStr,
+          settings,
+          "✅ <b>تم إلغاء الطلب الحالي وتصفير الاختيارات بنجاح!</b>"
+        );
         return;
       }
       
@@ -463,30 +490,10 @@ async function handleTelegramUpdate(update: any) {
         session.selectedPlanId = "";
         await db.saveSession(session);
         
-        const menus = await db.getMenus();
-
-        // بناء أزرار ReplyKeyboard (تظهر في أسفل الشاشة)
-        const replyKeyboardButtons: any[][] = menus.map((menu) => ([{
-          text: "🫁 " + menu.title
-        }]));
-        replyKeyboardButtons.push([{ text: "💬 تواصل مع الدعم الفني" }]);
-
-        // إرسال رسالة الترحيب مع القائمة السفلية في رسالة واحدة فقط
-        const welcomeText = settings.welcomeMessage || "🏥 أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت (MedKit)!\n\n📋 اختر الباقة المناسبة لك من القائمة أدناه 👇";
-        await callTelegramAPI(settings.botToken, "sendMessage", {
-          chat_id: chatIdStr,
-          text: welcomeText,
-          parse_mode: "HTML",
-          reply_markup: {
-            keyboard: replyKeyboardButtons,
-            resize_keyboard: true,
-            one_time_keyboard: false,
-            input_field_placeholder: "اختر باقة من القائمة..."
-          }
-        });
+        await sendWelcomeMenu(settings.botToken, chatIdStr, settings);
         return;
       }
-      
+
       // === أولوية قصوى: التحقق مما إذا كانت الرسالة عبارة عن باقة أو طلب دعم ===
       const menusList = await db.getMenus();
       const matchedMenu = text.trim() ? menusList.find((m) => {
@@ -721,10 +728,11 @@ async function handleTelegramUpdate(update: any) {
       };
       await db.saveSupportMessage(supportMsg);
 
-      // Forward general support messages to admins if user is NOT currently in an active step machine
+      // Forward general support messages to admins (with indicator if test message from admin itself)
       const isSelfAdmin = adminIds.includes(chatIdStr) || adminIds.includes(from.id?.toString());
-      if (!isSelfAdmin && adminIds.length > 0) {
-        const adminNotifyText = `💬 <b>رسالة دعم جديدة!</b>\n\n👤 العميل: <b>${fullname}</b> (@${username || "لا يوجد"})\n✉️ الرسالة: ${text || "[ملف/صورة]"}\n\n👤 معرف العميل: <code>${chatIdStr}</code>\n\n👈 للرد على هذه الرسالة، قم بعمل "Reply" عليها مباشرة واكتب ردك.`;
+      if (adminIds.length > 0) {
+        const testIndicator = isSelfAdmin ? "🧪 <b>[رسالة تجريبية من حساب مشرف]</b>\n\n" : "";
+        const adminNotifyText = `${testIndicator}💬 <b>رسالة دعم جديدة!</b>\n\n👤 العميل: <b>${fullname}</b> (@${username || "لا يوجد"})\n✉️ الرسالة: ${text || "[ملف/صورة]"}\n\n👤 معرف العميل: <code>${chatIdStr}</code>\n\n👈 للرد على هذه الرسالة، قم بعمل "Reply" عليها مباشرة واكتب ردك.`;
         for (const adminId of adminIds) {
           try {
             if (photoUrl) {
@@ -743,8 +751,19 @@ async function handleTelegramUpdate(update: any) {
         }
       }
       
-      const replyFallback = "أهلاً بك! 👋 لقد استلمنا رسالتك وتم توجيهها للدعم الفني للمراجعة والرد عليك قريباً.\n\nلمشاهدة الباقات المتاحة وتفعيل اشتراكك، يرجى إرسال الأمر: /start أو اختيارها من القائمة بالأسفل. 🏥";
-      await sendTelegramMessage(settings.botToken, chatIdStr, replyFallback);
+      // If the user's current step is "support", send a clean support-specific confirmation and return the user to "idle"
+      if (session.step === "support") {
+        session.step = "idle";
+        await db.saveSession(session);
+        await sendTelegramMessage(
+          settings.botToken,
+          chatIdStr,
+          "✅ <b>تم تسليم رسالتك واستفسارك بنجاح لفريق الدعم الفني!</b>\n\nسيقوم أحد ممثلي الإدارة بمراجعة طلبك والرد عليك هنا مباشرة في أسرع وقت. 🏥✨"
+        );
+      } else {
+        const replyFallback = "أهلاً بك! 👋 لقد استلمنا رسالتك وتم توجيهها للدعم الفني للمراجعة والرد عليك قريباً.\n\nلمشاهدة الباقات المتاحة وتفعيل اشتراكك، يرجى إرسال الأمر: /start أو اختيارها من القائمة بالأسفل. 🏥";
+        await sendTelegramMessage(settings.botToken, chatIdStr, replyFallback);
+      }
     }
   } catch (e: any) {
     console.error("Critical error in handleTelegramUpdate loop:", e.message);
