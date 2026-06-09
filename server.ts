@@ -426,18 +426,18 @@ async function handleTelegramUpdate(update: any) {
                       }
                     }
                   } catch (e: any) {
-                    console.error("Failed to dismiss inline keyboard:", e.message);
+                    console.error("Failed to dismiss inline keyboards:", e.message);
                   }
                 }
               }
             } catch (err: any) {
-              await sendTelegramMessage(settings.botToken, chatIdStr, `❌ فشل إرسال الرد للعميل: ${err.message}`);
+              console.error("Failed to send admin reply translation:", err.message);
             }
-            return;
+            return; // Exit webhook so admin's reply text isn't treated as customer message
           }
         }
       }
-      
+
       // Get or initialize User Session
       const session = await db.getSession(chatIdStr);
       
@@ -467,12 +467,12 @@ async function handleTelegramUpdate(update: any) {
 
         // بناء أزرار ReplyKeyboard (تظهر في أسفل الشاشة)
         const replyKeyboardButtons: any[][] = menus.map((menu) => ([{
-          text: `🫁 ${menu.title}`
+          text: "🫁 " + menu.title
         }]));
         replyKeyboardButtons.push([{ text: "💬 تواصل مع الدعم الفني" }]);
 
         // إرسال رسالة الترحيب مع القائمة السفلية في رسالة واحدة فقط
-        const welcomeText = settings.welcomeMessage || "🏥 أهلاً بك في بوت تفعيل اشتраكات منصة ميدكيت (MedKit)!\n\n📋 اختر الباقة المناسبة لك من القائمة أدناه 👇";
+        const welcomeText = settings.welcomeMessage || "🏥 أهلاً بك في بوت تفعيل اشتراكات منصة ميدكيت (MedKit)!\n\n📋 اختر الباقة المناسبة لك من القائمة أدناه 👇";
         await callTelegramAPI(settings.botToken, "sendMessage", {
           chat_id: chatIdStr,
           text: welcomeText,
@@ -487,50 +487,198 @@ async function handleTelegramUpdate(update: any) {
         return;
       }
       
-      // === معالجة اختيار الباقة من ReplyKeyboard ===
-      if (session.step === "idle" || !session.step) {
-        const menus = await db.getMenus();
-
-        // البحث عن باقة تطابق النص المُرسَل
-        const matchedMenu = menus.find((m) =>
-          text.trim() === `🫁 ${m.title}` ||
-          text.trim() === m.title
+      // === أولوية قصوى: التحقق مما إذا كانت الرسالة عبارة عن باقة أو طلب دعم ===
+      const menusList = await db.getMenus();
+      const matchedMenu = menusList.find((m) => {
+        const cleanText = text.trim().toLowerCase().replace(/[^\w\d\u0600-\u06FF]/g, '');
+        const cleanTitle = m.title.trim().toLowerCase().replace(/[^\w\d\u0600-\u06FF]/g, '');
+        
+        return (
+          text.trim() === m.title.trim() ||
+          text.trim() === "🫁 " + m.title.trim() ||
+          text.trim().includes(m.title.trim()) ||
+          m.title.trim().includes(text.trim()) ||
+          (cleanText.length > 2 && cleanTitle.length > 2 && (cleanText.includes(cleanTitle) || cleanTitle.includes(cleanText)))
         );
+      });
 
-        if (matchedMenu) {
-          session.step = "awaiting_info";
-          session.selectedPlanId = matchedMenu.id;
-          await db.saveSession(session);
+      if (matchedMenu) {
+        session.step = "awaiting_info";
+        session.selectedPlanId = matchedMenu.id;
+        await db.saveSession(session);
 
-          // إرسال تفاصيل الباقة
-          const detailsText = matchedMenu.details && matchedMenu.details.trim()
-            ? matchedMenu.details
-            : `📦 <b>باقة: ${matchedMenu.title}</b>\n\n💰 السعر: <b>${matchedMenu.price}</b>\n\n${matchedMenu.description || ""}`;
+        // إرسال تفاصيل الباقة
+        const detailsText = matchedMenu.details && matchedMenu.details.trim()
+          ? matchedMenu.details
+          : `📦 <b>باقة: ${matchedMenu.title}</b>\n\n💰 السعر: <b>${matchedMenu.price}</b>\n\n${matchedMenu.description || ""}`;
 
-          await callTelegramAPI(settings.botToken, "sendMessage", {
-            chat_id: chatIdStr,
-            text: detailsText,
-            parse_mode: "HTML",
-            reply_markup: { remove_keyboard: true }
-          });
+        await callTelegramAPI(settings.botToken, "sendMessage", {
+          chat_id: chatIdStr,
+          text: detailsText,
+          parse_mode: "HTML",
+          reply_markup: { remove_keyboard: true }
+        });
 
-          // طلب الإيميل
-          await sendTelegramMessage(settings.botToken, chatIdStr, "📧 <b>يرجى إدخال بريدك الإلكتروني المرتبط بالمنصة:</b>\n\n<i>(أو اكتب <b>/cancel</b> لإلغاء وتغيير الباقة في أي وقت)</i>");
-          return;
-        }
+        // طلب الإيميل
+        await sendTelegramMessage(settings.botToken, chatIdStr, "📧 <b>يرجى إدخال بريدك الإلكتروني المرتبط بالمنصة:</b>\n\n<i>(أو اكتب <b>/cancel</b> لإلغاء وتغيير الباقة في أي وقت)</i>");
+        return;
+      }
 
-        // زر الدعم الفني
-        if (text.trim() === "💬 تواصل مع الدعم الفني") {
+      // زر الدعم الفني
+      if (text.trim() === "💬 تواصل مع الدعم الفني") {
+        session.step = "support";
+        await db.saveSession(session);
+        await sendTelegramMessage(
+          settings.botToken,
+          chatIdStr,
+          "💬 <b>عميلنا العزيز، تواصل مع الدعم الفني</b>\n\nيرجى كتابة رسالتك أو استفسارك هنا مباشرة وسيقوم فريق الدعم الفني بالرد عليك في أقرب وقت ممكن! ⏱️"
+        );
+        return;
+      }
+
+      // === معالجة حالة إدخال البريد الإلكتروني (State Machine) ===
+      if (session.step === "awaiting_info") {
+        // تحقق من صحة البريد الإلكتروني
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(text.trim())) {
           await sendTelegramMessage(
-            settings.botToken,
-            chatIdStr,
-            "💬 <b>تواصل مع الدعم الفني</b>\n\nاكتب رسالتك أو استفسارك وسيرد عليك فريق الدعم في أقرب وقت ممكن. ⏱️"
+            settings.botToken, 
+            chatIdStr, 
+            "⚠️ <b>البريد الإلكتروني الذي أدخلته غير صحيح.</b>\n\nيرجى إرسال إيميل صحيح ومطابق مثل:\n<code>example@gmail.com</code>\n\n<i>(أو اكتب <b>/cancel</b> لإلغاء وتعديل الاختيار).</i>"
           );
           return;
         }
+
+        session.email = text.trim();
+        session.step = "awaiting_receipt";
+        await db.saveSession(session);
+        
+        const promptReceipt = `عظيم! لقد قمنا بتسجيل بريدك الإلكتروني بنجاح: <b>${text.trim()}</b>\n\nيرجى الآن إرفاق وإرسال صورة واضحة لإثبات التحويل (لقطة الشاشة للتحويل بالكامل أو الإيصال) ليتم إرسال طلبك فوراً لمراجعة الإدارة وتفعيل اشتراكك بالمنصة. 📸🧾\n\n<i>(لإلغاء الطلب بأي وقت، اكتب: <b>/cancel</b>)</i>`;
+        await sendTelegramMessage(settings.botToken, chatIdStr, promptReceipt);
+        return;
+      }
+      
+      // === معالجة حالة إرسال إثبات التحويل (State Machine) ===
+      if (session.step === "awaiting_receipt") {
+        // Log photo parser or details if attached
+        let promptPhotoUrl = "";
+        if (photos.length > 0) {
+          try {
+            const fileId = photos[photos.length - 1].file_id;
+            const fileInfo = await callTelegramAPI(settings.botToken, "getFile", { file_id: fileId });
+            if (fileInfo?.result?.file_path) {
+              promptPhotoUrl = `https://api.telegram.org/file/bot${settings.botToken}/${fileInfo.result.file_path}`;
+            }
+          } catch (e) {
+            console.error("Failed to parse receipt photo:", e);
+          }
+        } else if (document) {
+          try {
+            const fileId = document.file_id;
+            const fileInfo = await callTelegramAPI(settings.botToken, "getFile", { file_id: fileId });
+            if (fileInfo?.result?.file_path) {
+              promptPhotoUrl = `https://api.telegram.org/file/bot${settings.botToken}/${fileInfo.result.file_path}`;
+            }
+          } catch (e) {
+            console.error("Failed to parse document for receipt:", e);
+          }
+        }
+
+        if (photos.length > 0 || promptPhotoUrl) {
+          try {
+            // Get Plan Detail
+            const menus = await db.getMenus();
+            const pId = session.selectedPlanId || "m";
+            const menu = menus.find((m) => m.id === pId) || { title: "باقة ميدكيت مخصصة" };
+            
+            // Create a Ticket
+            const ticketId = `tkt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+            const ticket: any = {
+              id: ticketId,
+              telegramUserId: chatIdStr,
+              telegramUsername: username,
+              telegramName: fullname,
+              userId: chatIdStr,
+              username: username,
+              fullName: fullname,
+              email: session.email || "",
+              menuId: pId,
+              menuTitle: menu.title,
+              receiptPhotoUrl: promptPhotoUrl,
+              transactionImage: promptPhotoUrl,
+              status: "new",
+              adminComment: "",
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString()
+            };
+            
+            await db.saveTicket(ticket as any);
+            
+            // Reset Session
+            session.step = "idle";
+            session.selectedPlanId = "";
+            await db.saveSession(session);
+            
+            const successMsg = `تم استقبال إثبات التحويل بنجاح! 🎉\n\nلقد أرسلنا طلبك المرفق للمشرفين لمراجعته وتفعيله. سيصلك إشعار فوري هنا على تيليجرام فور الموافقة والتفعيل! 👍`;
+            await sendTelegramMessage(settings.botToken, chatIdStr, successMsg);
+            
+            // Notify Admins
+            if (adminIds.length > 0) {
+              const adminNotifyText = `🔔 <b>طلب اشتراك جديد بانتظار المراجعة!</b>\n\n` +
+                `━━━━━━━━━━━━━━━━━━\n` +
+                `👤 <b>العميل:</b> ${fullname} (@${username || "لا يوجد"})\n` +
+                `✉️ <b>الإيميل:</b> ${ticket.email}\n` +
+                `📦 <b>الباقة المطلوبة:</b> ${menu.title}\n` +
+                `━━━━━━━━━━━━━━━━━━\n` +
+                `🆔 <b>معرف العميل:</b> <code>${chatIdStr}</code>\n` +
+                `📋 <b>رقم الطلب:</b> <code>${ticketId}</code>\n` +
+                `📅 <b>التاريخ:</b> ${new Date().toLocaleString("ar-EG")}\n` +
+                `━━━━━━━━━━━━━━━━━━\n` +
+                `👈 اضغط ✅ لقبول الطلب أو ❌ لرفضه أو 💬 للرد المخصص.`;
+              
+              const inlineKeyboard = {
+                inline_keyboard: [
+                  [
+                     { text: "✅ قبول الطلب", callback_data: `admin_approve:${ticketId}` },
+                     { text: "❌ رفض الطلب", callback_data: `admin_reject:${ticketId}` }
+                  ],
+                  [
+                     { text: "💬 الرد مخصص", callback_data: `admin_reply:${ticketId}` }
+                  ]
+                ]
+               };
+              
+              for (const adminId of adminIds) {
+                try {
+                  if (promptPhotoUrl) {
+                    await callTelegramAPI(settings.botToken, "sendPhoto", {
+                      chat_id: adminId,
+                      photo: promptPhotoUrl,
+                      caption: adminNotifyText,
+                      parse_mode: "HTML",
+                      reply_markup: inlineKeyboard
+                    });
+                  } else {
+                    await sendTelegramMessage(settings.botToken, adminId, adminNotifyText, inlineKeyboard);
+                  }
+                } catch (e: any) {
+                  console.error(`Failed to notify admin ${adminId}:`, e.message);
+                }
+              }
+            }
+          } catch (err: any) {
+            console.error("Failed to process transaction receipt photo:", err.message);
+            await sendTelegramMessage(settings.botToken, chatIdStr, "⚠️ حدث خطأ أثناء معالجة الصورة وإرسالها للإدارة. يرجى محاولة إرسال الصورة بشكل صحيح مرة أخرى.");
+          }
+          return;
+         } else {
+          await sendTelegramMessage(settings.botToken, chatIdStr, "⚠️ يرجى إرسال صورة إثبات تحويل المبلغ (كلفتة شاشة أو صورة إيصال واضحة) للمواصلة وتفعيل الباقة.");
+          return;
+         }
       }
 
-      // Log all conversations to Support Messages so admin can check and chat manually
+      // === إذا وصلنا هنا: الرسالة هي رسالة تواصل/دعم حقيقي (ليست ضمن سيناريو الاشتراك) ===
+      // Log all other conversations to Support Messages so admin can check and chat manually
       let photoUrl = "";
       if (photos.length > 0) {
         try {
@@ -567,146 +715,28 @@ async function handleTelegramUpdate(update: any) {
       await db.saveSupportMessage(supportMsg);
 
       // Forward general support messages to admins if user is NOT currently in an active step machine
-      if ((session.step === "idle" || !session.step) && text.trim().toLowerCase() !== '/start') {
-        const isSelfAdmin = adminIds.includes(chatIdStr) || adminIds.includes(from.id?.toString());
-        if (!isSelfAdmin && adminIds.length > 0) {
-          const adminNotifyText = `💬 <b>رسالة دعم جديدة!</b>\n\n👤 العميل: <b>${fullname}</b> (@${username})\n✉️ الرسالة: ${text || "[ملف/صورة]"}\n\n👤 معرف العميل: <code>${chatIdStr}</code>\n\n👈 للرد على هذه الرسالة، قم بعمل "Reply" عليها مباشرة واكتب ردك.`;
-          for (const adminId of adminIds) {
-            try {
-              if (photoUrl) {
-                await callTelegramAPI(settings.botToken, "sendPhoto", {
-                  chat_id: adminId,
-                  photo: photoUrl,
-                  caption: adminNotifyText,
-                  parse_mode: "HTML"
-                });
-              } else {
-                await sendTelegramMessage(settings.botToken, adminId, adminNotifyText);
-              }
-            } catch (e: any) {
-              console.error(`Failed to forward support text to admin ${adminId}:`, e.message);
-            }
-          }
-        }
-      }
-      
-      // State Machine handling
-      if (session.step === "awaiting_info") {
-        // تحقق من صحة البريد الإلكتروني
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(text.trim())) {
-          await sendTelegramMessage(
-            settings.botToken, 
-            chatIdStr, 
-            "⚠️ <b>البريد الإلكتروني الذي أدخلته غير صحيح.</b>\n\nيرجى إرسال إيميل صحيح ومطابق مثل:\n<code>example@gmail.com</code>\n\n<i>(أو اكتب <b>/cancel</b> لإلغاء وتعديل الاختيار).</i>"
-          );
-          return;
-        }
-
-        session.email = text.trim();
-        session.step = "awaiting_receipt";
-        await db.saveSession(session);
-        
-        const promptReceipt = `عظيم! لقد قمنا بتسجيل بريدك الإلكتروني بنجاح: <b>${text.trim()}</b>\n\nيرجى الآن إرفاق وإرسال صورة واضحة لإثبات التحويل (لقطة الشاشة للتحويل بالكامل أو الإيصال) ليتم إرسال طلبك فوراً لمراجعة الإدارة وتفعيل اشتراكك بالمنصة. 📸🧾\n\n<i>(لإلغاء الطلب بأي وقت، اكتب: <b>/cancel</b>)</i>`;
-        await sendTelegramMessage(settings.botToken, chatIdStr, promptReceipt);
-        return;
-      }
-      
-      if (session.step === "awaiting_receipt") {
-        if (photos.length > 0 || photoUrl) {
+      const isSelfAdmin = adminIds.includes(chatIdStr) || adminIds.includes(from.id?.toString());
+      if (!isSelfAdmin && adminIds.length > 0) {
+        const adminNotifyText = `💬 <b>رسالة دعم جديدة!</b>\n\n👤 العميل: <b>${fullname}</b> (@${username || "لا يوجد"})\n✉️ الرسالة: ${text || "[ملف/صورة]"}\n\n👤 معرف العميل: <code>${chatIdStr}</code>\n\n👈 للرد على هذه الرسالة، قم بعمل "Reply" عليها مباشرة واكتب ردك.`;
+        for (const adminId of adminIds) {
           try {
-            // Get Plan Detail
-            const menus = await db.getMenus();
-            const pId = session.selectedPlanId || "m";
-            const menu = menus.find((m) => m.id === pId) || { title: "باقة ميدكيت مخصصة" };
-            
-            // Create a Ticket
-            const ticketId = `tkt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-            const ticket: any = {
-              id: ticketId,
-              telegramUserId: chatIdStr,
-              telegramUsername: username,
-              telegramName: fullname,
-              userId: chatIdStr,
-              username: username,
-              fullName: fullname,
-              email: session.email || "",
-              menuId: pId,
-              menuTitle: menu.title,
-              receiptPhotoUrl: photoUrl,
-              transactionImage: photoUrl,
-              status: "new",
-              adminComment: "",
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            };
-            
-            await db.saveTicket(ticket as any);
-            
-            // Reset Session
-            session.step = "idle";
-            session.selectedPlanId = "";
-            await db.saveSession(session);
-            
-            const successMsg = `تم استقبال إثبات التحويل بنجاح! 🎉\n\nلقد أرسلنا طلبك المرفق للمشرفين لمراجعته وتفعيله. سيصلك إشعار فوري هنا على تيليجرام فور الموافقة والتفعيل! 👍`;
-            await sendTelegramMessage(settings.botToken, chatIdStr, successMsg);
-            
-            // Notify Admins
-            if (adminIds.length > 0) {
-              const adminNotifyText = `🔔 <b>طلب اشتراك جديد بانتظار المراجعة!</b>\n\n` +
-                `━━━━━━━━━━━━━━━━━━\n` +
-                `👤 <b>العميل:</b> ${fullname} (@${username || "لا يوجد"})\n` +
-                `✉️ <b>الإيميل:</b> ${ticket.email}\n` +
-                `📦 <b>الباقة المطلوبة:</b> ${menu.title}\n` +
-                `━━━━━━━━━━━━━━━━━━\n` +
-                `🆔 <b>معرف العميل:</b> <code>${chatIdStr}</code>\n` +
-                `📋 <b>رقم الطلب:</b> <code>${ticketId}</code>\n` +
-                `📅 <b>التاريخ:</b> ${new Date().toLocaleString("ar-EG")}\n` +
-                `━━━━━━━━━━━━━━━━━━\n` +
-                `👈 اضغط ✅ لقبول الطلب أو ❌ لرفضه أو 💬 للرد المخصص.`;
-              
-              const inlineKeyboard = {
-                inline_keyboard: [
-                  [
-                    { text: "✅ قبول الطلب", callback_data: `admin_approve:${ticketId}` },
-                    { text: "❌ رفض الطلب", callback_data: `admin_reject:${ticketId}` }
-                  ],
-                  [
-                    { text: "💬 الرد مخصص", callback_data: `admin_reply:${ticketId}` }
-                  ]
-                ]
-              };
-              
-              for (const adminId of adminIds) {
-                try {
-                  if (photoUrl) {
-                    await callTelegramAPI(settings.botToken, "sendPhoto", {
-                      chat_id: adminId,
-                      photo: photoUrl,
-                      caption: adminNotifyText,
-                      parse_mode: "HTML",
-                      reply_markup: inlineKeyboard
-                    });
-                  } else {
-                    await sendTelegramMessage(settings.botToken, adminId, adminNotifyText, inlineKeyboard);
-                  }
-                } catch (e: any) {
-                  console.error(`Failed to notify admin ${adminId}:`, e.message);
-                }
-              }
+            if (photoUrl) {
+              await callTelegramAPI(settings.botToken, "sendPhoto", {
+                chat_id: adminId,
+                photo: photoUrl,
+                caption: adminNotifyText,
+                parse_mode: "HTML"
+              });
+            } else {
+              await sendTelegramMessage(settings.botToken, adminId, adminNotifyText);
             }
-          } catch (err: any) {
-            console.error("Failed to process transaction receipt photo:", err.message);
-            await sendTelegramMessage(settings.botToken, chatIdStr, "⚠️ حدث خطأ أثناء معالجة الصورة وإرسالها للإدارة. يرجى محاولة إرسال الصورة بشكل صحيح مرة أخرى.");
+          } catch (e: any) {
+            console.error(`Failed to forward support text to admin ${adminId}:`, e.message);
           }
-          return;
-        } else {
-          await sendTelegramMessage(settings.botToken, chatIdStr, "⚠️ يرجى إرسال صورة إثبات تحويل المبلغ (كلفتة شاشة أو صورة إيصال واضحة) للمواصلة وتفعيل الباقة.");
-          return;
         }
       }
       
-      const replyFallback = "أهلاً بك! 👋\nللاشتراك وعرض الباقات المتاحة، اضغط على /start أو اكتبها.";
+      const replyFallback = "أهلاً بك! 👋 لقد استلمنا رسالتك وتم توجيهها للدعم الفني للمراجعة والرد عليك قريباً.\n\nلمشاهدة الباقات المتاحة وتفعيل اشتراكك، يرجى إرسال الأمر: /start أو اختيارها من القائمة بالأسفل. 🏥";
       await sendTelegramMessage(settings.botToken, chatIdStr, replyFallback);
     }
   } catch (e: any) {
