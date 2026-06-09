@@ -578,6 +578,27 @@ export class DatabaseController {
     }
   }
 
+  async getProcessedUpdateIds(): Promise<number[]> {
+    if (firestoreWorking) {
+      try {
+        const snapshot = await this.fsDb.collection("processed_updates").get();
+        const ids: number[] = [];
+        snapshot.forEach(doc => {
+          const num = parseInt(doc.id, 10);
+          if (!isNaN(num)) ids.push(num);
+        });
+        return ids;
+      } catch (err) {
+        handleFirestoreError(err, "getProcessedUpdateIds");
+      }
+    }
+    const db = readLocalDB();
+    const localMap = (db as any).processedUpdates || {};
+    return Object.keys(localMap)
+      .map(k => parseInt(k, 10))
+      .filter(num => !isNaN(num));
+  }
+
   /**
    * Acquisition of a global polling lock to ensure only one instance polls at a time.
    * instanceId: unique ID for this bot process

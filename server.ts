@@ -18,6 +18,10 @@ app.use(express.json());
 // Generate a random instance id for multi-instance identification and master polling logic
 const instanceId = `inst_${Math.random().toString(36).substring(2, 11)}`;
 
+// ─── Deduplication & Rate Limit Locks ────────────────────────────────────────
+const updatesInProgress = new Set<number>();
+const ticketsInProgress = new Set<string>();
+
 // ─── Firebase Admin Setup ───────────────────────────────────────────────────
 let firestore: any;
 try {
@@ -206,121 +210,139 @@ async function handleTelegramUpdate(update: any) {
         const action = data.startsWith('admin_approve:') ? 'approve' : data.startsWith('admin_reject:') ? 'reject' : 'reply';
         const ticketId = data.substring(data.indexOf(':') + 1);
 
-        const ticket = await db.getTicket(ticketId);
-        if (!ticket) {
-          await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
-            callback_query_id: cb.id,
-            text: "عذراً، لم يتم العثور على هذا الطلب في الخادم.",
-            show_alert: true
-          });
-          return;
+        if (action !== 'reply') {
+          if (ticketsInProgress.has(ticketId)) {
+            await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
+              callback_query_id: cb.id,
+              text: "يرجى الانتظار، جاري معالجة هذا الإجراء حالياً...",
+              show_alert: true
+            });
+            return;
+          }
+          ticketsInProgress.add(ticketId);
         }
 
-        if (action === 'reply') {
-          await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
-            callback_query_id: cb.id,
-            text: "تم تفعيل حقل كتابة الرد الفوري للعميل..."
-          });
-
-          const replyPrompt = `💬 <b>اكتب ردك الموجه للعميل أدناه:</b>\n\n👤 معرف العميل للرد: <code>${ticket.telegramUserId}</code>\n🆔 رقم الطلب: <code>${ticket.id}</code>\n\n👈 قم بـ Reply (رد) مباشرة على هذه الرسالة واكتب ردك الموجه للعميل وسيتم إرساله وتحديثه فوراً!`;
-
-          await callTelegramAPI(settings.botToken, "sendMessage", {
-            chat_id: chatIdStr,
-            text: replyPrompt,
-            parse_mode: "HTML",
-            reply_to_message_id: cb.message?.message_id,
-            reply_markup: {
-              force_reply: true,
-              selective: true
-            }
-          });
-          return;
-        }
-
-        if (ticket.status !== 'new') {
-          await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
-            callback_query_id: cb.id,
-            text: `عذراً، تم اتخاذ إجراء مسبق على هذا الطلب وهو: ${ticket.status === 'approved' ? 'مقبول ✅' : 'مرفوض ❌'}`,
-            show_alert: true
-          });
-          return;
-        }
-
-        const adminName = [from.first_name || '', from.last_name || ''].filter(Boolean).join(' ') || "مشرف الإدارة";
-
-        if (action === 'approve') {
-          ticket.status = 'approved';
-          ticket.updatedAt = new Date().toISOString();
-          ticket.adminComment = `تم القبول والتشغيل من تيليجرام بواسطة المشرف: ${adminName}`;
-          await db.saveTicket(ticket);
-
-          // Inform user
-          if (ticket.telegramUserId) {
-            const userMsg = `🎉 <b>تم قبول والموافقة على طلب تفعيل الباقة (${ticket.menuTitle}) الخاص بك بنجاح!</b>\n\nيسعدنا انضمامك وتفعيله في المنصة. 🏥✨\n\n📝 <b>ملاحظة الإدارة:</b> تم المراجعة والتفعيل الفوري لحسابك.`;
-            await sendTelegramMessage(settings.botToken, ticket.telegramUserId, userMsg).catch(e => {});
-          }
-
-          // Broadcast status to other admins
-          for (const adminId of adminIds) {
-            const broadcastMsg = `✅ <b>البوت: تم تفعيل الطلب!</b>\n\n👤 العميل: <b>${ticket.fullName}</b>\n📦 الباقة: <b>${ticket.menuTitle}</b>\n\n👮 تمت الموافقة والتفعيل بواسطة المشرف: <b>${adminName}</b> (@${from.username || ''})`;
-            await sendTelegramMessage(settings.botToken, adminId, broadcastMsg).catch(e => {});
-          }
-        } else if (action === 'reject') {
-          ticket.status = 'rejected';
-          ticket.updatedAt = new Date().toISOString();
-          ticket.adminComment = `تم الرفض من تيليجرام بواسطة المشرف: ${adminName}`;
-          await db.saveTicket(ticket);
-
-          // Inform user
-          if (ticket.telegramUserId) {
-            const userMsg = `❌ <b>معذرةً، تم رفض طلب تفعيل باقة (${ticket.menuTitle}) الخاص بك لعدم استيفاء الشروط.</b>\n\nيرجى إعادة إرسال الطلب بصورة صحيحة وواضحة للإيصال أو التواصل مع الدعم الفني للمنصة.`;
-            await sendTelegramMessage(settings.botToken, ticket.telegramUserId, userMsg).catch(e => {});
-          }
-
-          // Broadcast status to other admins
-          for (const adminId of adminIds) {
-            const broadcastMsg = `❌ <b>البوت: تم رفض الطلب!</b>\n\n👤 العميل: <b>${ticket.fullName}</b>\n📦 الباقة: <b>${ticket.menuTitle}</b>\n\n👮 تم الرفض بواسطة المشرف: <b>${adminName}</b> (@${from.username || ''})`;
-            await sendTelegramMessage(settings.botToken, adminId, broadcastMsg).catch(e => {});
-          }
-        }
-
-        // Remove keyboard from the current message and update message text to show completion
         try {
-          const chat_id = cb.message?.chat?.id;
-          const message_id = cb.message?.message_id;
-          if (chat_id && message_id) {
-            const label = action === 'approve' ? 'مقبول ✅' : 'مرفوض ❌';
-            if (cb.message.photo) {
-              const originalCaption = cb.message.caption || "";
-              const cleanCaption = originalCaption + `\n\n📥 <b>القرار: تم معالجة الطلب (${label}) بواسطة: ${adminName}</b>`;
-              await callTelegramAPI(settings.botToken, "editMessageCaption", {
-                chat_id,
-                message_id,
-                caption: cleanCaption,
-                parse_mode: "HTML",
-                reply_markup: { inline_keyboard: [] }
-              });
-            } else {
-              const originalText = cb.message.text || "";
-              const cleanText = originalText + `\n\n📥 <b>القرار: تم معالجة الطلب (${label}) بواسطة: ${adminName}</b>`;
-              await callTelegramAPI(settings.botToken, "editMessageText", {
-                chat_id,
-                message_id,
-                text: cleanText,
-                parse_mode: "HTML",
-                reply_markup: { inline_keyboard: [] }
-              });
+          const ticket = await db.getTicket(ticketId);
+          if (!ticket) {
+            await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
+              callback_query_id: cb.id,
+              text: "عذراً، لم يتم العثور على هذا الطلب في الخادم.",
+              show_alert: true
+            });
+            return;
+          }
+
+          if (action === 'reply') {
+            await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
+              callback_query_id: cb.id,
+              text: "تم تفعيل حقل كتابة الرد الفوري للعميل..."
+            });
+
+            const replyPrompt = `💬 <b>اكتب ردك الموجه للعميل أدناه:</b>\n\n👤 معرف العميل للرد: <code>${ticket.telegramUserId}</code>\n🆔 رقم الطلب: <code>${ticket.id}</code>\n\n👈 قم بـ Reply (رد) مباشرة على هذه الرسالة واكتب ردك الموجه للعميل وسيتم إرساله وتحديثه فوراً!`;
+
+            await callTelegramAPI(settings.botToken, "sendMessage", {
+              chat_id: chatIdStr,
+              text: replyPrompt,
+              parse_mode: "HTML",
+              reply_to_message_id: cb.message?.message_id,
+              reply_markup: {
+                force_reply: true,
+                selective: true
+              }
+            });
+            return;
+          }
+
+          if (ticket.status !== 'new') {
+            await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
+              callback_query_id: cb.id,
+              text: `عذراً، تم اتخاذ إجراء مسبق على هذا الطلب وهو: ${ticket.status === 'approved' ? 'مقبول ✅' : 'مرفوض ❌'}`,
+              show_alert: true
+            });
+            return;
+          }
+
+          const adminName = [from.first_name || '', from.last_name || ''].filter(Boolean).join(' ') || "مشرف الإدارة";
+
+          if (action === 'approve') {
+            ticket.status = 'approved';
+            ticket.updatedAt = new Date().toISOString();
+            ticket.adminComment = `تم القبول والتشغيل من تيليجرام بواسطة المشرف: ${adminName}`;
+            await db.saveTicket(ticket);
+
+            // Inform user
+            if (ticket.telegramUserId) {
+              const userMsg = `🎉 <b>تم قبول والموافقة على طلب تفعيل الباقة (${ticket.menuTitle}) الخاص بك بنجاح!</b>\n\nيسعدنا انضمامك وتفعيله في المنصة. 🏥✨\n\n📝 <b>ملاحظة الإدارة:</b> تم المراجعة والتفعيل الفوري لحسابك.`;
+              await sendTelegramMessage(settings.botToken, ticket.telegramUserId, userMsg).catch(e => {});
+            }
+
+            // Broadcast status to other admins
+            for (const adminId of adminIds) {
+              const broadcastMsg = `✅ <b>البوت: تم تفعيل الطلب!</b>\n\n👤 العميل: <b>${ticket.fullName}</b>\n📦 الباقة: <b>${ticket.menuTitle}</b>\n\n👮 تمت الموافقة والتفعيل بواسطة المشرف: <b>${adminName}</b> (@${from.username || ''})`;
+              await sendTelegramMessage(settings.botToken, adminId, broadcastMsg).catch(e => {});
+            }
+          } else if (action === 'reject') {
+            ticket.status = 'rejected';
+            ticket.updatedAt = new Date().toISOString();
+            ticket.adminComment = `تم الرفض من تيليجرام بواسطة المشرف: ${adminName}`;
+            await db.saveTicket(ticket);
+
+            // Inform user
+            if (ticket.telegramUserId) {
+              const userMsg = `❌ <b>معذرةً، تم رفض طلب تفعيل باقة (${ticket.menuTitle}) الخاص بك لعدم استيفاء الشروط.</b>\n\nيرجى إعادة إرسال الطلب بصورة صحيحة وواضحة للإيصال أو التواصل مع الدعم الفني للمنصة.`;
+              await sendTelegramMessage(settings.botToken, ticket.telegramUserId, userMsg).catch(e => {});
+            }
+
+            // Broadcast status to other admins
+            for (const adminId of adminIds) {
+              const broadcastMsg = `❌ <b>البوت: تم رفض الطلب!</b>\n\n👤 العميل: <b>${ticket.fullName}</b>\n📦 الباقة: <b>${ticket.menuTitle}</b>\n\n👮 تم الرفض بواسطة المشرف: <b>${adminName}</b> (@${from.username || ''})`;
+              await sendTelegramMessage(settings.botToken, adminId, broadcastMsg).catch(e => {});
             }
           }
-        } catch (e: any) {
-          console.error("Failed to edit inline message:", e.message);
-        }
 
-        await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
-          callback_query_id: cb.id,
-          text: `تم حفظ الإجراء وإشعار العميل.`
-        });
-        return;
+          // Remove keyboard from the current message and update message text to show completion
+          try {
+            const chat_id = cb.message?.chat?.id;
+            const message_id = cb.message?.message_id;
+            if (chat_id && message_id) {
+              const label = action === 'approve' ? 'مقبول ✅' : 'مرفوض ❌';
+              if (cb.message.photo) {
+                const originalCaption = cb.message.caption || "";
+                const cleanCaption = originalCaption + `\n\n📥 <b>القرار: تم معالجة الطلب (${label}) بواسطة: ${adminName}</b>`;
+                await callTelegramAPI(settings.botToken, "editMessageCaption", {
+                  chat_id,
+                  message_id,
+                  caption: cleanCaption,
+                  parse_mode: "HTML",
+                  reply_markup: { inline_keyboard: [] }
+                });
+              } else {
+                const originalText = cb.message.text || "";
+                const cleanText = originalText + `\n\n📥 <b>القرار: تم معالجة الطلب (${label}) بواسطة: ${adminName}</b>`;
+                await callTelegramAPI(settings.botToken, "editMessageText", {
+                  chat_id,
+                  message_id,
+                  text: cleanText,
+                  parse_mode: "HTML",
+                  reply_markup: { inline_keyboard: [] }
+                });
+              }
+            }
+          } catch (e: any) {
+            console.error("Failed to edit inline message:", e.message);
+          }
+
+          await callTelegramAPI(settings.botToken, 'answerCallbackQuery', {
+            callback_query_id: cb.id,
+            text: `تم حفظ الإجراء وإشعار العميل.`
+          });
+          return;
+        } finally {
+          if (action !== 'reply') {
+            ticketsInProgress.delete(ticketId);
+          }
+        }
       }
 
       // 1.b User Subscription Selected Plan Callback Handler
@@ -1055,9 +1077,20 @@ app.post(['/api/webhook/telegram', '/api/webhook', '/api/webhook/'], async (req,
     res.status(200).send('OK');
     
     if (update && update.update_id) {
-      const claimed = await db.claimUpdate(update.update_id, instanceId);
-      if (claimed) {
-        await handleTelegramUpdate(update);
+      if (updatesInProgress.has(update.update_id)) {
+        return;
+      }
+      updatesInProgress.add(update.update_id);
+      
+      try {
+        const claimed = await db.claimUpdate(update.update_id, instanceId);
+        if (claimed) {
+          await handleTelegramUpdate(update);
+        }
+      } finally {
+        setTimeout(() => {
+          updatesInProgress.delete(update.update_id);
+        }, 12000); // 12-second retention to absorb duplication bursts
       }
     }
   } catch (err: any) {
@@ -1084,6 +1117,35 @@ async function runLongPolling() {
       if (!settings.botToken || settings.devPollingEnabled === false || settings.activeInstanceUrl) {
         await new Promise(resolve => setTimeout(resolve, 5000));
         continue;
+      }
+
+      // Initialize lastUpdateId on boot to avoid processing old updates (anti-overlapping/anti-duplication)
+      if (lastUpdateId === 0) {
+        try {
+          const processed = await (db as any).getProcessedUpdateIds();
+          if (processed && processed.length > 0) {
+            lastUpdateId = Math.max(...processed);
+            console.log(`[Polling] Restored lastUpdateId from database: ${lastUpdateId}`);
+          }
+        } catch (e: any) {
+          console.error("[Polling] Error reading processed updates:", e.message);
+        }
+
+        if (lastUpdateId === 0) {
+          try {
+            const initRes = await callTelegramAPI(settings.botToken, 'getUpdates', {
+              offset: -1,
+              limit: 1,
+              timeout: 0
+            });
+            if (initRes && initRes.result && initRes.result.length > 0) {
+              lastUpdateId = initRes.result[0].update_id;
+              console.log(`[Polling] No local updates found. Initialized lastUpdateId to latest Telegram update ID ${lastUpdateId} to prevent replay of old updates.`);
+            }
+          } catch (e: any) {
+            console.error("[Polling] Error fetching latest update_id from Telegram on bootstrap:", e.message);
+          }
+        }
       }
 
       // Check if Webhook is active on Telegram periodically to avoid Conflicts
@@ -1130,10 +1192,24 @@ async function runLongPolling() {
         for (const update of response.result) {
           lastUpdateId = Math.max(lastUpdateId, update.update_id);
           
-          const claimed = await db.claimUpdate(update.update_id, instanceId);
-          if (claimed) {
-            await handleTelegramUpdate(update);
+          if (updatesInProgress.has(update.update_id)) {
+            continue;
           }
+          updatesInProgress.add(update.update_id);
+          
+          // Execute asynchronously so lock isn't held up and updates are decoupled
+          (async () => {
+             try {
+               const claimed = await db.claimUpdate(update.update_id, instanceId);
+               if (claimed) {
+                 await handleTelegramUpdate(update);
+               }
+             } finally {
+               setTimeout(() => {
+                 updatesInProgress.delete(update.update_id);
+               }, 15000); // 15s lock retention
+             }
+          })();
         }
       }
     } catch (err: any) {
