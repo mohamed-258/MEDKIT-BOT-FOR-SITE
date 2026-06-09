@@ -441,6 +441,22 @@ async function handleTelegramUpdate(update: any) {
       // Get or initialize User Session
       const session = await db.getSession(chatIdStr);
       
+      // Check for cancel / back commands
+      if (text.trim() === "❌ إلغاء الطلب" || text.trim().toLowerCase() === '/cancel' || text.trim() === "🔙 العودة للقائمة") {
+        session.step = "idle";
+        session.selectedPlanId = "";
+        session.email = "";
+        await db.saveSession(session);
+        
+        await callTelegramAPI(settings.botToken, "sendMessage", {
+          chat_id: chatIdStr,
+          text: "✅ تم إلغاء الطلب الحالي. يمكنك البدء من جديد واختيار باقة أخرى بالضغط على /start",
+          parse_mode: "HTML",
+          reply_markup: { remove_keyboard: true }
+        });
+        return;
+      }
+      
       // Check for /start command
       if (text.trim().toLowerCase() === '/start') {
         session.step = "idle";
@@ -448,20 +464,84 @@ async function handleTelegramUpdate(update: any) {
         await db.saveSession(session);
         
         const menus = await db.getMenus();
-        const inlineKeyboard: any[] = [];
-        
-        for (const menu of menus) {
-          inlineKeyboard.push([{
-            text: `🟢 ${menu.title} (${menu.price})`,
-            callback_data: `select_plan:${menu.id}`
-          }]);
+
+        // === الخطوة 1: إرسال رسالة الترحيب (من الإعدادات أو الافتراضية) ===
+        const welcomeText = settings.welcomeMessage || 
+          "🏥 <b>مرحباً بك في منصة ميدكيت التعليمية!</b>\n\n" +
+          "📚 نحن هنا لمساعدتك في الوصول إلى أفضل المحتوى الطبي التعليمي.\n\n" +
+          "⬇️ اختر الباقة التي تناسبك من القائمة أدناه:";
+
+        await sendTelegramMessage(settings.botToken, chatIdStr, welcomeText);
+
+        // === الخطوة 2: إرسال قائمة الباقات كـ ReplyKeyboard في أسفل الشاشة ===
+        if (menus.length > 0) {
+          // بناء أزرار ReplyKeyboard - صف واحد لكل باقة
+          const replyKeyboardButtons: any[] = menus.map((menu) => ([{
+            text: `🫁 ${menu.title}`
+          }]));
+
+          // إضافة زر "تواصل مع الدعم" في الأسفل
+          replyKeyboardButtons.push([{ text: "💬 تواصل مع الدعم الفني" }]);
+
+          await callTelegramAPI(settings.botToken, "sendMessage", {
+            chat_id: chatIdStr,
+            text: "📋 <b>الباقات المتاحة:</b>",
+            parse_mode: "HTML",
+            reply_markup: {
+              keyboard: replyKeyboardButtons,
+              resize_keyboard: true,
+              one_time_keyboard: false,
+              input_field_placeholder: "اختر باقة من القائمة أدناه..."
+            }
+          });
         }
-        
-        const welcomeText = settings.welcomeMessage || "🏥 مرحباً بك في مساعد تفعيل باقات ميدكيت!";
-        await sendTelegramMessage(settings.botToken, chatIdStr, welcomeText, {
-          inline_keyboard: inlineKeyboard
-        });
         return;
+      }
+
+      // === معالجة اختيار الباقة من ReplyKeyboard ===
+      // يبحث في الباقات المخزنة إذا كان النص يطابق اسم باقة
+      if (session.step === "idle" || !session.step) {
+        const menus = await db.getMenus();
+        
+        // البحث عن الباقة المطابقة للنص المُرسَل
+        const matchedMenu = menus.find((m) => 
+          text.trim() === `🫁 ${m.title}` || 
+          text.trim() === m.title
+        );
+
+        if (matchedMenu) {
+          // تحديث الجلسة
+          session.step = "awaiting_info";
+          session.selectedPlanId = matchedMenu.id;
+          await db.saveSession(session);
+
+          // إرسال تفاصيل الباقة
+          const detailsText = matchedMenu.details || 
+            `📦 <b>باقة: ${matchedMenu.title}</b>\n\n💰 السعر: <b>${matchedMenu.price}</b>\n\n${matchedMenu.description || ""}`;
+          
+          await sendTelegramMessage(settings.botToken, chatIdStr, detailsText);
+
+          // طلب الإيميل
+          await callTelegramAPI(settings.botToken, "sendMessage", {
+            chat_id: chatIdStr,
+            text: "📧 <b>يرجى إدخال بريدك الإلكتروني المرتبط بالمنصة:</b>\n\n(أرسل <b>/cancel</b> في أي وقت للإلغاء)",
+            parse_mode: "HTML",
+            reply_markup: {
+              remove_keyboard: true  // إخفاء ReplyKeyboard عند طلب الإيميل
+            }
+          });
+          return;
+        }
+
+        // زر "تواصل مع الدعم الفني"
+        if (text.trim() === "💬 تواصل مع الدعم الفني") {
+          await sendTelegramMessage(
+            settings.botToken, 
+            chatIdStr, 
+            "💬 <b>تواصل مع الدعم الفني</b>\n\nيمكنك كتابة رسالتك أو استفسارك هنا مباشرة وسيرد عليك فريق الدعم في أقرب وقت ممكن. ⏱️"
+          );
+          return;
+        }
       }
       
       // Log all conversations to Support Messages so admin can check and chat manually
@@ -526,11 +606,22 @@ async function handleTelegramUpdate(update: any) {
       
       // State Machine handling
       if (session.step === "awaiting_info") {
+        // تحقق من صحة البريد الإلكتروني
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(text.trim())) {
+          await sendTelegramMessage(
+            settings.botToken, 
+            chatIdStr, 
+            "⚠️ <b>البريد الإلكتروني الذي أدخلته غير صحيح.</b>\n\nيرجى إرسال إيميل صحيح ومطابق مثل:\n<code>example@gmail.com</code>\n\n<i>(أو اكتب <b>/cancel</b> لإلغاء وتعديل الاختيار).</i>"
+          );
+          return;
+        }
+
         session.email = text.trim();
         session.step = "awaiting_receipt";
         await db.saveSession(session);
         
-        const promptReceipt = `عظيم! لقد قمنا بتسجيل بريدك الإلكتروني بنجاح: <b>${text.trim()}</b>\n\nيرجى الآن إرفاق وإرسال صورة واضحة لإثبات التحويل (لقطة الشاشة للتحويل بالكامل أو الإيصال) ليتم إرسال طلبك فوراً لمراجعة الإدارة وتفعيل اشتراكك بالمنصة. 📸🧾`;
+        const promptReceipt = `عظيم! لقد قمنا بتسجيل بريدك الإلكتروني بنجاح: <b>${text.trim()}</b>\n\nيرجى الآن إرفاق وإرسال صورة واضحة لإثبات التحويل (لقطة الشاشة للتحويل بالكامل أو الإيصال) ليتم إرسال طلبك فوراً لمراجعة الإدارة وتفعيل اشتراكك بالمنصة. 📸🧾\n\n<i>(لإلغاء الطلب بأي وقت، اكتب: <b>/cancel</b>)</i>`;
         await sendTelegramMessage(settings.botToken, chatIdStr, promptReceipt);
         return;
       }
@@ -576,7 +667,17 @@ async function handleTelegramUpdate(update: any) {
             
             // Notify Admins
             if (adminIds.length > 0) {
-              const adminNotifyText = `🔔 <b>طلب تفعيل واشتراك جديد!</b>\n\n👤 العميل: <b>${fullname}</b> (@${username})\n✉️ الايميل: <b>${ticket.email}</b>\n📦 الباقة: <b>${menu.title}</b>\n\n👤 معرف العميل: <code>${chatIdStr}</code>\n🆔 رقم الطلب: <code>${ticketId}</code>\n\n👈 يمكنك قبول أو رفض الطلب فوراً باستخدام الأزرار أدناه، أو عمل Reply والرد برسالة مخصصة مباشرة.`;
+              const adminNotifyText = `🔔 <b>طلب اشتراك جديد بانتظار المراجعة!</b>\n\n` +
+                `━━━━━━━━━━━━━━━━━━\n` +
+                `👤 <b>العميل:</b> ${fullname} (@${username || "لا يوجد"})\n` +
+                `✉️ <b>الإيميل:</b> ${ticket.email}\n` +
+                `📦 <b>الباقة المطلوبة:</b> ${menu.title}\n` +
+                `━━━━━━━━━━━━━━━━━━\n` +
+                `🆔 <b>معرف العميل:</b> <code>${chatIdStr}</code>\n` +
+                `📋 <b>رقم الطلب:</b> <code>${ticketId}</code>\n` +
+                `📅 <b>التاريخ:</b> ${new Date().toLocaleString("ar-EG")}\n` +
+                `━━━━━━━━━━━━━━━━━━\n` +
+                `👈 اضغط ✅ لقبول الطلب أو ❌ لرفضه أو 💬 للرد المخصص.`;
               
               const inlineKeyboard = {
                 inline_keyboard: [

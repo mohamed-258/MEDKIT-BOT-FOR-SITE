@@ -826,7 +826,7 @@ export default function App() {
                 </div>
 
                 {/* Dashboard Stats Cards Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-5">
                   <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden">
                     <div className="space-y-1">
                       <p className="text-xs text-slate-400 font-medium">قيد المراجعة ⏳</p>
@@ -854,6 +854,21 @@ export default function App() {
                     </div>
                     <div className="p-3 bg-red-500/10 rounded-2xl border border-red-500/20 text-red-500 shadow-inner">
                       <X className="h-7 w-7" />
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden">
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-400 font-medium">معدل القبول 📈</p>
+                      <p className="text-4xl font-extrabold text-emerald-400 font-mono">
+                        {tickets.filter(t => t.status !== "new").length > 0 
+                          ? `${Math.round((activeCount / tickets.filter(t => t.status !== 'new').length || 0) * 100)}%`
+                          : "—"
+                        }
+                      </p>
+                    </div>
+                    <div className="p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20 text-emerald-500 shadow-inner">
+                      <CheckCircle2 className="h-7 w-7" />
                     </div>
                   </div>
 

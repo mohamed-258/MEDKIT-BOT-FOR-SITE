@@ -50,9 +50,12 @@ export interface UserSession {
   telegramUsername: string;
   telegramName: string;
   state: 'idle' | 'awaiting_email' | 'awaiting_receipt' | 'support';
+  // حقول إضافية تستخدمها server.ts (step-based session)
+  step?: 'idle' | 'awaiting_info' | 'awaiting_receipt';
+  selectedPlanId?: string;
+  email?: string | null;
   menuId?: string | null;
   menuTitle?: string | null;
-  email?: string | null;
   updatedAt: string;
 }
 
