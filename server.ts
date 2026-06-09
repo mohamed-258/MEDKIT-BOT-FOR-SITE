@@ -465,85 +465,71 @@ async function handleTelegramUpdate(update: any) {
         
         const menus = await db.getMenus();
 
-        // === الخطوة 1: إرسال رسالة الترحيب (من الإعدادات أو الافتراضية) ===
-        const welcomeText = settings.welcomeMessage || 
-          "🏥 <b>مرحباً بك في منصة ميدكيت التعليمية!</b>\n\n" +
-          "📚 نحن هنا لمساعدتك في الوصول إلى أفضل المحتوى الطبي التعليمي.\n\n" +
-          "⬇️ اختر الباقة التي تناسبك من القائمة أدناه:";
+        // بناء أزرار ReplyKeyboard (تظهر في أسفل الشاشة)
+        const replyKeyboardButtons: any[][] = menus.map((menu) => ([{
+          text: `🫁 ${menu.title}`
+        }]));
+        replyKeyboardButtons.push([{ text: "💬 تواصل مع الدعم الفني" }]);
 
-        await sendTelegramMessage(settings.botToken, chatIdStr, welcomeText);
-
-        // === الخطوة 2: إرسال قائمة الباقات كـ ReplyKeyboard في أسفل الشاشة ===
-        if (menus.length > 0) {
-          // بناء أزرار ReplyKeyboard - صف واحد لكل باقة
-          const replyKeyboardButtons: any[] = menus.map((menu) => ([{
-            text: `🫁 ${menu.title}`
-          }]));
-
-          // إضافة زر "تواصل مع الدعم" في الأسفل
-          replyKeyboardButtons.push([{ text: "💬 تواصل مع الدعم الفني" }]);
-
-          await callTelegramAPI(settings.botToken, "sendMessage", {
-            chat_id: chatIdStr,
-            text: "📋 <b>الباقات المتاحة:</b>",
-            parse_mode: "HTML",
-            reply_markup: {
-              keyboard: replyKeyboardButtons,
-              resize_keyboard: true,
-              one_time_keyboard: false,
-              input_field_placeholder: "اختر باقة من القائمة أدناه..."
-            }
-          });
-        }
+        // إرسال رسالة الترحيب مع القائمة السفلية في رسالة واحدة فقط
+        const welcomeText = settings.welcomeMessage || "🏥 أهلاً بك في بوت تفعيل اشتраكات منصة ميدكيت (MedKit)!\n\n📋 اختر الباقة المناسبة لك من القائمة أدناه 👇";
+        await callTelegramAPI(settings.botToken, "sendMessage", {
+          chat_id: chatIdStr,
+          text: welcomeText,
+          parse_mode: "HTML",
+          reply_markup: {
+            keyboard: replyKeyboardButtons,
+            resize_keyboard: true,
+            one_time_keyboard: false,
+            input_field_placeholder: "اختر باقة من القائمة..."
+          }
+        });
         return;
       }
-
+      
       // === معالجة اختيار الباقة من ReplyKeyboard ===
-      // يبحث في الباقات المخزنة إذا كان النص يطابق اسم باقة
       if (session.step === "idle" || !session.step) {
         const menus = await db.getMenus();
-        
-        // البحث عن الباقة المطابقة للنص المُرسَل
-        const matchedMenu = menus.find((m) => 
-          text.trim() === `🫁 ${m.title}` || 
+
+        // البحث عن باقة تطابق النص المُرسَل
+        const matchedMenu = menus.find((m) =>
+          text.trim() === `🫁 ${m.title}` ||
           text.trim() === m.title
         );
 
         if (matchedMenu) {
-          // تحديث الجلسة
           session.step = "awaiting_info";
           session.selectedPlanId = matchedMenu.id;
           await db.saveSession(session);
 
           // إرسال تفاصيل الباقة
-          const detailsText = matchedMenu.details || 
-            `📦 <b>باقة: ${matchedMenu.title}</b>\n\n💰 السعر: <b>${matchedMenu.price}</b>\n\n${matchedMenu.description || ""}`;
-          
-          await sendTelegramMessage(settings.botToken, chatIdStr, detailsText);
+          const detailsText = matchedMenu.details && matchedMenu.details.trim()
+            ? matchedMenu.details
+            : `📦 <b>باقة: ${matchedMenu.title}</b>\n\n💰 السعر: <b>${matchedMenu.price}</b>\n\n${matchedMenu.description || ""}`;
 
-          // طلب الإيميل
           await callTelegramAPI(settings.botToken, "sendMessage", {
             chat_id: chatIdStr,
-            text: "📧 <b>يرجى إدخال بريدك الإلكتروني المرتبط بالمنصة:</b>\n\n(أرسل <b>/cancel</b> في أي وقت للإلغاء)",
+            text: detailsText,
             parse_mode: "HTML",
-            reply_markup: {
-              remove_keyboard: true  // إخفاء ReplyKeyboard عند طلب الإيميل
-            }
+            reply_markup: { remove_keyboard: true }
           });
+
+          // طلب الإيميل
+          await sendTelegramMessage(settings.botToken, chatIdStr, "📧 <b>يرجى إدخال بريدك الإلكتروني المرتبط بالمنصة:</b>\n\n<i>(أو اكتب <b>/cancel</b> لإلغاء وتغيير الباقة في أي وقت)</i>");
           return;
         }
 
-        // زر "تواصل مع الدعم الفني"
+        // زر الدعم الفني
         if (text.trim() === "💬 تواصل مع الدعم الفني") {
           await sendTelegramMessage(
-            settings.botToken, 
-            chatIdStr, 
-            "💬 <b>تواصل مع الدعم الفني</b>\n\nيمكنك كتابة رسالتك أو استفسارك هنا مباشرة وسيرد عليك فريق الدعم في أقرب وقت ممكن. ⏱️"
+            settings.botToken,
+            chatIdStr,
+            "💬 <b>تواصل مع الدعم الفني</b>\n\nاكتب رسالتك أو استفسارك وسيرد عليك فريق الدعم في أقرب وقت ممكن. ⏱️"
           );
           return;
         }
       }
-      
+
       // Log all conversations to Support Messages so admin can check and chat manually
       let photoUrl = "";
       if (photos.length > 0) {
@@ -720,7 +706,7 @@ async function handleTelegramUpdate(update: any) {
         }
       }
       
-      const replyFallback = "أهلاً بك! لعرض خطط الأسعار والاشتراكات المتاحة وتفعيل الإشتراك، يرجى كتابة أو الضغط على /start .";
+      const replyFallback = "أهلاً بك! 👋\nللاشتراك وعرض الباقات المتاحة، اضغط على /start أو اكتبها.";
       await sendTelegramMessage(settings.botToken, chatIdStr, replyFallback);
     }
   } catch (e: any) {
