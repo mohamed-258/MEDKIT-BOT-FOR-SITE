@@ -996,6 +996,7 @@ app.get('/api/telegram-status', async (req, res) => {
       isPollingActive: pollingActive && settings.devPollingEnabled !== false,
       masterInstanceId: settings.masterInstanceId || instanceId,
       devPollingEnabled: settings.devPollingEnabled !== false,
+      isFirestoreWorking: db.isFirestoreWorking(),
       activeInstances,
       webhookInfo
     });

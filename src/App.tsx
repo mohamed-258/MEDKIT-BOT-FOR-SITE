@@ -1,10 +1,10 @@
-import { useState, useEffect, FormEvent } from "react";
+import { useState, useEffect, FormEvent, useRef } from "react";
 import { 
   Bot, Key, Send, Copy, Check, X, ShieldAlert, Sparkles, 
   LayoutDashboard, Ticket, Settings, MenuSquare, CheckCircle2, 
   AlertCircle, Clock, ExternalLink, Image, RefreshCw, Plus, Trash2, 
   Edit2, LogOut, LogIn, UserCheck, HelpCircle, HeartPulse, ShieldCheck,
-  ChevronLeft, MessageSquare
+  ChevronLeft, MessageSquare, Bold, Italic, Underline, Strikethrough, Code, Quote
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Menu, Ticket as TicketType, Setting, SupportMessage } from "./types";
@@ -58,12 +58,143 @@ export default function App() {
 
   // Menu editor
   const [editingMenu, setEditingMenu] = useState<Partial<Menu> | null>(null);
+  const [isEditingExistingMenu, setIsEditingExistingMenu] = useState(false);
   const [showMenuModal, setShowMenuModal] = useState(false);
   const [menuActionStatus, setMenuActionStatus] = useState<"idle" | "success" | "error">("idle");
   const [menuActionMessage, setMenuActionMessage] = useState("");
 
   // Copied states
   const [copiedSetting, setCopiedSetting] = useState<string | null>(null);
+
+  // Helper functions for formatting Telegram HTML messages
+  const insertFormatTag = (
+    tag: string,
+    value: string,
+    setValue: (val: string) => void,
+    textareaId: string,
+    isExpandableQuote?: boolean
+  ) => {
+    const textarea = document.getElementById(textareaId) as HTMLTextAreaElement;
+    if (!textarea) return;
+
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const selectedText = value.substring(start, end);
+
+    let openTag = `<${tag}>`;
+    let closeTag = `</${tag}>`;
+    
+    if (tag === 'blockquote' && isExpandableQuote) {
+      openTag = '<blockquote expandable>';
+    }
+
+    const replacement = openTag + selectedText + closeTag;
+    const newValue = value.substring(0, start) + replacement + value.substring(end);
+
+    setValue(newValue);
+
+    // Re-focus and set selection
+    setTimeout(() => {
+      textarea.focus();
+      const newCursorPos = start + openTag.length + selectedText.length + closeTag.length;
+      textarea.setSelectionRange(newCursorPos, newCursorPos);
+    }, 50);
+  };
+
+  const insertFormatForMenuDetails = (tag: string, isExpandableQuote?: boolean) => {
+    if (!editingMenu) return;
+    const currentVal = editingMenu.details || "";
+    insertFormatTag(tag, currentVal, (val) => {
+      setEditingMenu({ ...editingMenu, details: val });
+    }, "menu-details-textarea", isExpandableQuote);
+  };
+
+  const renderFormatToolbar = (
+    textareaId: string,
+    value: string,
+    setValue: (val: string) => void,
+    customInserter?: (tag: string, isExpandableQuote?: boolean) => void
+  ) => {
+    const handleInsert = (tag: string, isExpandableQuote?: boolean) => {
+      if (customInserter) {
+        customInserter(tag, isExpandableQuote);
+      } else {
+        insertFormatTag(tag, value, setValue, textareaId, isExpandableQuote);
+      }
+    };
+
+    return (
+      <div className="flex flex-wrap items-center gap-1 p-1.5 bg-slate-900/90 border border-white/5 rounded-t-xl text-xs select-none">
+        <button
+          type="button"
+          onClick={() => handleInsert("b")}
+          className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer font-bold transition-colors"
+          title="عريض (Bold) - <b>"
+        >
+          <Bold className="h-3 w-3" />
+          <span className="text-[10px] hidden md:inline">عريض</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleInsert("i")}
+          className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer italic transition-colors"
+          title="مائل (Italic) - <i>"
+        >
+          <Italic className="h-3 w-3" />
+          <span className="text-[10px] hidden md:inline">مائل</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleInsert("u")}
+          className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer underline transition-colors"
+          title="تحته خط (Underline) - <u>"
+        >
+          <Underline className="h-3 w-3" />
+          <span className="text-[10px] hidden md:inline">خط سفلي</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleInsert("s")}
+          className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer line-through transition-colors"
+          title="شطب (Strikethrough) - <s>"
+        >
+          <Strikethrough className="h-3 w-3" />
+          <span className="text-[10px] hidden md:inline">شطب</span>
+        </button>
+        <div className="w-[1px] h-3 bg-white/10 mx-1" />
+        <button
+          type="button"
+          onClick={() => handleInsert("code")}
+          className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer font-mono transition-colors"
+          title="كود برمجى (Code) - <code>"
+        >
+          <Code className="h-3 w-3" />
+          <span className="text-[10px] hidden md:inline">كود</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleInsert("blockquote")}
+          className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer transition-colors"
+          title="اقتباس (Quote) - <blockquote>"
+        >
+          <Quote className="h-3 w-3" />
+          <span className="text-[10px] hidden md:inline">اقتباس</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleInsert("blockquote", true)}
+          className="p-1 hover:bg-slate-800 text-cyan-400 hover:text-cyan-300 rounded flex items-center gap-1 cursor-pointer transition-colors"
+          title="اقتباس قابل للطي (Expandable Quote) - <blockquote expandable>"
+        >
+          <Quote className="h-3 w-3 text-cyan-400" />
+          <span className="text-[10px] hidden md:inline">اقتباس مطوي</span>
+        </button>
+        <div className="mr-auto text-[9px] text-slate-500 font-sans hidden sm:block pl-1">
+          تنسيقات تيليجرام HTML المدعومة
+        </div>
+      </div>
+    );
+  };
 
   // Custom diagnostic error handling
   const triggerDiagnosticError = (error: unknown, operation: string, path: string) => {
@@ -355,8 +486,14 @@ export default function App() {
     
     setMenuActionStatus("idle");
     setMenuActionMessage("");
-    const menuId = editingMenu.id.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+    
+    let menuId = (editingMenu.id || "").toLowerCase().trim().replace(/[^a-z0-9_]/g, "_").replace(/^_+|_+$/g, "");
+    
     try {
+      if (!menuId || menuId.length < 2) {
+        throw new Error("اسم كود الباقة غير صالح أو قصير جداً. يرجى استخدام أحرف إنجليزية وأرقام فقط (مثال: plan_ultra)");
+      }
+
       const payload = {
         id: menuId,
         title: editingMenu.title,
@@ -1281,13 +1418,17 @@ export default function App() {
                           <label className="text-xs text-slate-400 font-bold block">
                             توجيه الرد والقرار للعميل (سيصله الرد والتفعيل في رسالة خاصة على التليجرام فورا) ✍️
                           </label>
-                          <textarea
-                            value={replyMessage}
-                            onChange={(e) => setReplyMessage(e.target.value)}
-                            placeholder="مثال: تم تفعيل حسابك بنجاح! يمكنك الآن تسجيل الدخول للمنصة والمشاهدة. أو: الإيصال غير سليم يرجى التحقق وإعادة الإرسال."
-                            rows={3}
-                            className="w-full bg-slate-950 border border-white/5 rounded-xl p-4 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
-                          />
+                          <div className="space-y-0">
+                            {renderFormatToolbar("ticket-reply-textarea", replyMessage, setReplyMessage)}
+                            <textarea
+                              id="ticket-reply-textarea"
+                              value={replyMessage}
+                              onChange={(e) => setReplyMessage(e.target.value)}
+                              placeholder="مثال: تم تفعيل حسابك بنجاح! يمكنك الآن تسجيل الدخول للمنصة والمشاهدة. أو: الإيصال غير سليم يرجى التحقق وإعادة الإرسال."
+                              rows={4}
+                              className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-4 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 font-sans"
+                            />
+                          </div>
 
                           {/* Action Buttons */}
                           <div className="flex flex-col sm:flex-row gap-3">
@@ -1363,6 +1504,7 @@ export default function App() {
                   <button
                     onClick={() => {
                       setEditingMenu({ id: "", title: "", price: "", description: "", details: "" });
+                      setIsEditingExistingMenu(false);
                       setShowMenuModal(true);
                     }}
                     className="px-4 py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-xl text-xs transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-cyan-500/10"
@@ -1370,6 +1512,28 @@ export default function App() {
                     <Plus className="h-4.5 w-4.5" />
                     اضافة باقة اشتراك جديدة
                   </button>
+                </div>
+
+                {/* Conflict and database behavior warning for maximum clarity and support */}
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-5 text-right space-y-3">
+                  <div className="flex items-center justify-end gap-2 text-amber-400">
+                    <span className="font-bold text-sm md:text-base font-sans">توضيح وحل نهائي لتداخل الردود واختلاف الأسعار (مثال: ظهور 30 ج بدلاً من 40 ج)</span>
+                    <span className="text-lg">⚠️</span>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    إذا قمت بتعديل سعر الباقة أو تفاصيلها من هذه اللوحة (أو لوحة أخرى) ووجدت أن البوت على تيليجرام لا يزال يرسل السعر القديم (مثل <b>30 جنيهاً</b> بدلاً من <b>40 جنيهاً</b>)، فإن السبب يعود إلى الآتي:
+                  </p>
+                  <ul className="text-xs text-slate-400 space-y-2 list-disc list-inside pr-4">
+                    <li>
+                      <b className="text-amber-400">تعدد خوادم التشغيل (تعارض الحالات):</b> لديك سيرفر آخر مستضاف بنشاط على موقع <b>Railway</b> (مثل <code className="bg-slate-950 px-1 py-0.5 rounded text-slate-300">af.up.railway.app</code> الموضح في صورتك) يعمل <b>بنفس توكن البوت</b> في نفس الوقت. هذا السيرفر يستحوذ على الرسائل من تيليجرام ويرسل الردود من قاعدة بياناته القديمة وغير المحدثة.
+                    </li>
+                    <li>
+                      <b className="text-amber-400">طبيعة قاعدة البيانات المحلية:</b> نظراً لعدم توفر صلاحيات Firestore التلقائية على المنظومة في الوقت الحالي، فإن لوحة التحكم هذه واللوحة الأخرى تعملان بنمط الحفظ المحلي (<code className="bg-slate-950 px-1 py-0.5 rounded text-slate-300">local-db.json</code>). عند إعادة تشغيل السيرفر أو بناء نسخة جديدة على Railway، تعود الأزرار للأسعار الافتراضية القديمة.
+                    </li>
+                  </ul>
+                  <div className="pt-2 text-xs font-bold text-cyan-400 flex items-center justify-end gap-2">
+                    <span>💡 الحل؟ قم بإيقاف خادم التليجرام على Railway لتفادي تعارض استقبال الردود، واعتمد كلياً على التطبيق والخادم المحدث هنا.</span>
+                  </div>
                 </div>
 
                 {/* Visual success/error notifications for actions on menus */}
@@ -1420,6 +1584,7 @@ export default function App() {
                         <button
                           onClick={() => {
                             setEditingMenu(menu);
+                            setIsEditingExistingMenu(true);
                             setShowMenuModal(true);
                           }}
                           className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 hover:text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer border border-white/5"
@@ -1468,7 +1633,7 @@ export default function App() {
                           <input
                             type="text"
                             required
-                            disabled={!!editingMenu.id}
+                            disabled={isEditingExistingMenu}
                             value={editingMenu.id || ""}
                             onChange={(e) => setEditingMenu({ ...editingMenu, id: e.target.value })}
                             className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 placeholder-slate-600 font-mono disabled:opacity-50"
@@ -1514,14 +1679,23 @@ export default function App() {
                           <label className="text-xs text-slate-400 block mb-1">
                             التفاصيل الكاملة ورسالة الشراء المقترنة للبوت (تظهر للمشترك على تليجرام عند الضغط على الباقة) *
                           </label>
-                          <textarea
-                            rows={5}
-                            required
-                            value={editingMenu.details || ""}
-                            onChange={(e) => setEditingMenu({ ...editingMenu, details: e.target.value })}
-                            className="w-full bg-slate-950 border border-white/5 rounded-xl p-4 text-xs text-slate-200 font-mono"
-                            placeholder="يرجى تحويل مبلغ الاشتراك إلى فودافون كاش على الرقم (010x) ثم كتابة إيميلك المسجل بالمنصة وإرساله..."
-                          />
+                          <div className="flex flex-col">
+                            {renderFormatToolbar(
+                              "menu-details-textarea",
+                              editingMenu.details || "",
+                              (val) => setEditingMenu({ ...editingMenu, details: val }),
+                              insertFormatForMenuDetails
+                            )}
+                            <textarea
+                              id="menu-details-textarea"
+                              rows={5}
+                              required
+                              value={editingMenu.details || ""}
+                              onChange={(e) => setEditingMenu({ ...editingMenu, details: e.target.value })}
+                              className="w-full bg-slate-950 border border-white/5 rounded-b-xl p-4 text-xs text-slate-200 font-sans rounded-t-none border-t-0 focus:outline-none focus:border-cyan-500/20"
+                              placeholder="يرجى تحويل مبلغ الاشتراك إلى فودافون كاش على الرقم (010x) ثم كتابة إيميلك المسجل بالمنصة وإرساله..."
+                            />
+                          </div>
                         </div>
 
                         <div className="flex gap-3 pt-3 border-t border-white/5">
@@ -1742,14 +1916,18 @@ export default function App() {
 
                         <div className="space-y-1 pb-2">
                           <label className="text-xs text-slate-400 block font-bold">رسالة الرد الخاص بك *</label>
-                          <textarea
-                            rows={4}
-                            required
-                            placeholder="اكتب رد الدعم الفني لدكتور ميدكيت وسيصل له مباشرة على حسابه الشخصي في تليجرام..."
-                            value={supportReplyText}
-                            onChange={(e) => setSupportReplyText(e.target.value)}
-                            className="w-full bg-slate-950 border border-white/5 rounded-xl p-3.5 text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50 text-right font-sans"
-                          />
+                          <div className="space-y-0">
+                            {renderFormatToolbar("support-reply-textarea", supportReplyText, setSupportReplyText)}
+                            <textarea
+                              id="support-reply-textarea"
+                              rows={4}
+                              required
+                              placeholder="اكتب رد الدعم الفني لدكتور ميدكيت وسيصل له مباشرة على حسابه الشخصي في تليجرام..."
+                              value={supportReplyText}
+                              onChange={(e) => setSupportReplyText(e.target.value)}
+                              className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-3.5 text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50 text-right font-sans"
+                            />
+                          </div>
                         </div>
 
                         <button
@@ -1843,13 +2021,17 @@ export default function App() {
 
                       <div className="space-y-1">
                         <label className="text-xs text-slate-400 block font-bold">رسالة الترحيب التلقائية بالبوت (/start)</label>
-                        <textarea
-                          rows={4}
-                          value={welcomeMsgInput}
-                          onChange={(e) => setWelcomeMsgInput(e.target.value)}
-                          placeholder="اكتب الترحيب للمشترك..."
-                          className="w-full bg-slate-950 border border-white/5 rounded-xl p-4 text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50"
-                        />
+                        <div className="space-y-0">
+                          {renderFormatToolbar("welcome-msg-textarea", welcomeMsgInput, setWelcomeMsgInput)}
+                          <textarea
+                            id="welcome-msg-textarea"
+                            rows={4}
+                            value={welcomeMsgInput}
+                            onChange={(e) => setWelcomeMsgInput(e.target.value)}
+                            placeholder="اكتب الترحيب للمشترك..."
+                            className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-4 text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50 font-sans"
+                          />
+                        </div>
                       </div>
 
                       <div className="flex items-center gap-4 pt-3 border-t border-white/5">

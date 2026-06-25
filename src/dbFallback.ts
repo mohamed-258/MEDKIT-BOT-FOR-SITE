@@ -221,6 +221,10 @@ export class DatabaseController {
     this.fsDb = fsDb;
   }
 
+  isFirestoreWorking(): boolean {
+    return firestoreWorking;
+  }
+
   // settings/global
   async getSettings(): Promise<Setting> {
     const now = Date.now();
