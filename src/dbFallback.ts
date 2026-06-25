@@ -679,5 +679,34 @@ export class DatabaseController {
     }
   }
 
+  /**
+   * Export all data from the database (mainly for backup or syncing between local and cloud)
+   */
+  async exportAllData(): Promise<any> {
+    const db = readLocalDB();
+    return db;
+  }
+
+  /**
+   * Import all data into the database and write to disk
+   */
+  async importAllData(data: any): Promise<void> {
+    if (!data || typeof data !== "object") {
+      throw new Error("بيانات المزامنة غير صالحة.");
+    }
+    
+    const db = readLocalDB();
+    
+    // Replace instead of merge so that deleted packages, tickets and support messages are correctly synced and deleted on the target side
+    if (data.settings) db.settings = data.settings;
+    if (data.menus) db.menus = data.menus;
+    if (data.tickets) db.tickets = data.tickets;
+    if (data.sessions) db.sessions = data.sessions;
+    if (data.supportMessages) db.supportMessages = data.supportMessages;
+
+    writeLocalDB(db);
+    cachedLocalDB = db; // ensure cache is up-to-date
+  }
+
 }
 

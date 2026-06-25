@@ -1,10 +1,11 @@
-import { useState, useEffect, FormEvent, useRef } from "react";
+import { useState, useEffect, FormEvent } from "react";
 import { 
   Bot, Key, Send, Copy, Check, X, ShieldAlert, Sparkles, 
   LayoutDashboard, Ticket, Settings, MenuSquare, CheckCircle2, 
   AlertCircle, Clock, ExternalLink, Image, RefreshCw, Plus, Trash2, 
   Edit2, LogOut, LogIn, UserCheck, HelpCircle, HeartPulse, ShieldCheck,
-  ChevronLeft, MessageSquare, Bold, Italic, Underline, Strikethrough, Code, Quote
+  ChevronLeft, MessageSquare, Bold, Italic, Underline, Strikethrough, Code, Quote,
+  Database, ArrowDownCircle, ArrowUpCircle
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Menu, Ticket as TicketType, Setting, SupportMessage } from "./types";
@@ -17,16 +18,13 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState("");
   const [loginError, setLoginError] = useState("");
 
-  // Firestore synchronizations
+  // DB Sync states
   const [settings, setSettings] = useState<Setting | null>(null);
   const [menus, setMenus] = useState<Menu[]>([]);
   const [tickets, setTickets] = useState<TicketType[]>([]);
   const [supportMessages, setSupportMessages] = useState<SupportMessage[]>([]);
 
-  // Database fallback status if Firestore is failing / permissions restricted on client
-  const [useFallbackDB, setUseFallbackDB] = useState(false);
-  
-  // UX states
+  // Active UI tab
   const [activeTab, setActiveTab] = useState<"overview" | "tickets" | "menus" | "support" | "settings">("overview");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -36,37 +34,43 @@ export default function App() {
   const [submittingReply, setSubmittingReply] = useState(false);
   const [replySuccess, setReplySuccess] = useState(false);
 
-  // Support message modal/action states
+  // Support messages states
   const [selectedSupportMessage, setSelectedSupportMessage] = useState<SupportMessage | null>(null);
   const [supportReplyText, setSupportReplyText] = useState("");
   const [submittingSupportReply, setSubmittingSupportReply] = useState(false);
   const [supportReplySuccess, setSupportReplySuccess] = useState(false);
   const [dashboardPasswordInput, setDashboardPasswordInput] = useState("");
 
-  // Webhook states
+  // Webhook and Polling states
   const [webhookStatus, setWebhookStatus] = useState<any>(null);
   const [fetchingWebhook, setFetchingWebhook] = useState(false);
   const [webhookSettingStatus, setWebhookSettingStatus] = useState<"idle" | "success" | "error">("idle");
   const [webhookErrorMsg, setWebhookErrorMsg] = useState("");
 
-  // Edit fields
+  // Global settings inputs
   const [tokenInput, setTokenInput] = useState("");
   const [adminChatIdInput, setAdminChatIdInput] = useState("");
   const [welcomeMsgInput, setWelcomeMsgInput] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Menu editor
+  // Railway DB Cloud Sync states
+  const [railwayUrl, setRailwayUrl] = useState(() => localStorage.getItem("sync_railway_url") || "");
+  const [syncToken, setSyncToken] = useState(() => localStorage.getItem("sync_token") || "");
+  const [syncStatus, setSyncStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [syncMessage, setSyncMessage] = useState("");
+
+  // Menu/Package Editor Modal states
   const [editingMenu, setEditingMenu] = useState<Partial<Menu> | null>(null);
   const [isEditingExistingMenu, setIsEditingExistingMenu] = useState(false);
   const [showMenuModal, setShowMenuModal] = useState(false);
   const [menuActionStatus, setMenuActionStatus] = useState<"idle" | "success" | "error">("idle");
   const [menuActionMessage, setMenuActionMessage] = useState("");
 
-  // Copied states
+  // Copy feedbacks
   const [copiedSetting, setCopiedSetting] = useState<string | null>(null);
 
-  // Helper functions for formatting Telegram HTML messages
+  // Helper formatting for Telegram Markdown/HTML
   const insertFormatTag = (
     tag: string,
     value: string,
@@ -93,7 +97,6 @@ export default function App() {
 
     setValue(newValue);
 
-    // Re-focus and set selection
     setTimeout(() => {
       textarea.focus();
       const newCursorPos = start + openTag.length + selectedText.length + closeTag.length;
@@ -124,7 +127,7 @@ export default function App() {
     };
 
     return (
-      <div className="flex flex-wrap items-center gap-1 p-1.5 bg-slate-900/90 border border-white/5 rounded-t-xl text-xs select-none">
+      <div className="flex flex-wrap items-center gap-1 p-1.5 bg-slate-900 border border-white/5 rounded-t-xl text-xs select-none">
         <button
           type="button"
           onClick={() => handleInsert("b")}
@@ -147,29 +150,37 @@ export default function App() {
           type="button"
           onClick={() => handleInsert("u")}
           className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer underline transition-colors"
-          title="تحته خط (Underline) - <u>"
+          title="مسطر (Underline) - <u>"
         >
           <Underline className="h-3 w-3" />
-          <span className="text-[10px] hidden md:inline">خط سفلي</span>
+          <span className="text-[10px] hidden md:inline">مسطر</span>
         </button>
         <button
           type="button"
           onClick={() => handleInsert("s")}
           className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer line-through transition-colors"
-          title="شطب (Strikethrough) - <s>"
+          title="مشطوب (Strike) - <s>"
         >
           <Strikethrough className="h-3 w-3" />
-          <span className="text-[10px] hidden md:inline">شطب</span>
+          <span className="text-[10px] hidden md:inline">مشطوب</span>
         </button>
-        <div className="w-[1px] h-3 bg-white/10 mx-1" />
         <button
           type="button"
           onClick={() => handleInsert("code")}
           className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer font-mono transition-colors"
-          title="كود برمجى (Code) - <code>"
+          title="كود مدمج (Code) - <code>"
         >
           <Code className="h-3 w-3" />
           <span className="text-[10px] hidden md:inline">كود</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => handleInsert("pre")}
+          className="p-1 hover:bg-slate-800 text-slate-300 hover:text-white rounded flex items-center gap-1 cursor-pointer font-mono transition-colors"
+          title="كتلة برمجية (Preformatted) - <pre>"
+        >
+          <Code className="h-3 w-3 text-cyan-400" />
+          <span className="text-[10px] hidden md:inline">كتلة برمجية</span>
         </button>
         <button
           type="button"
@@ -190,27 +201,13 @@ export default function App() {
           <span className="text-[10px] hidden md:inline">اقتباس مطوي</span>
         </button>
         <div className="mr-auto text-[9px] text-slate-500 font-sans hidden sm:block pl-1">
-          تنسيقات تيليجرام HTML المدعومة
+          تنسيقات تليجرام المدعومة
         </div>
       </div>
     );
   };
 
-  // Custom diagnostic error handling
-  const triggerDiagnosticError = (error: unknown, operation: string, path: string) => {
-    const errorPayload = {
-      error: error instanceof Error ? error.message : String(error),
-      operationType: operation,
-      path
-    };
-    console.error("Firestore Diagnostic: ", JSON.stringify(errorPayload));
-  };
-
-  useEffect(() => {
-    fetchRESTSettings();
-  }, []);
-
-  // Fallback REST fetch API helpers
+  // REST API Loaders
   const fetchRESTSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -277,62 +274,6 @@ export default function App() {
     }
   };
 
-  // 2. Fetch or Synchronize settings in real-time
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    
-    // Always load via API first
-    fetchRESTSettings();
-
-    const interval = setInterval(() => {
-      fetchRESTSettings();
-    }, 10000);
-
-    return () => clearInterval(interval);
-  }, [isAuthenticated]);
-
-  // Synchronize support messages in real-time
-  useEffect(() => {
-    if (!isAuthenticated) return;
-
-    fetchRESTSupportMessages();
-
-    const interval = setInterval(() => {
-      fetchRESTSupportMessages();
-    }, 4000);
-
-    return () => clearInterval(interval);
-  }, [isAuthenticated]);
-
-  // 3. Synchronize Menus in real-time
-  useEffect(() => {
-    if (!isAuthenticated) return;
-
-    // Always load via API first
-    fetchRESTMenus();
-
-    const interval = setInterval(() => {
-      fetchRESTMenus();
-    }, 4000);
-
-    return () => clearInterval(interval);
-  }, [isAuthenticated]);
-
-  // 4. Synchronize Tickets in real-time (order by newest)
-  useEffect(() => {
-    if (!isAuthenticated) return;
-
-    // Always load via API first
-    fetchRESTTickets();
-
-    const interval = setInterval(() => {
-      fetchRESTTickets();
-    }, 4000);
-
-    return () => clearInterval(interval);
-  }, [isAuthenticated]);
-
-  // Fetch Telegram Webhook Status from Server API
   const fetchTelegramWebhookStatus = async () => {
     setFetchingWebhook(true);
     try {
@@ -346,13 +287,53 @@ export default function App() {
     }
   };
 
+  // Interval synchronization (realtime feel)
+  useEffect(() => {
+    fetchRESTSettings();
+    fetchRESTMenus();
+    fetchRESTTickets();
+    fetchRESTSupportMessages();
+  }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    
+    fetchRESTSettings();
+    const interval = setInterval(fetchRESTSettings, 10000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    fetchRESTSupportMessages();
+    const interval = setInterval(fetchRESTSupportMessages, 4000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    fetchRESTMenus();
+    const interval = setInterval(fetchRESTMenus, 5000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    fetchRESTTickets();
+    const interval = setInterval(fetchRESTTickets, 4000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
   useEffect(() => {
     if (isAuthenticated) {
       fetchTelegramWebhookStatus();
     }
   }, [isAuthenticated, settings]);
 
-  // Handle Password Login
+  // Handle Login
   const handleLogin = async (e: FormEvent) => {
     e.preventDefault();
     setCheckingAuth(true);
@@ -379,13 +360,11 @@ export default function App() {
     }
   };
 
-  // Handle Logout
   const handleLogout = () => {
     localStorage.removeItem("dashboard_auth");
     setIsAuthenticated(false);
   };
 
-  // Copy helper
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedSetting(id);
@@ -404,7 +383,6 @@ export default function App() {
       dashboardPassword: dashboardPasswordInput.trim() || "admin"
     };
     try {
-      // Always save safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -424,9 +402,7 @@ export default function App() {
     }
   };
 
-
-
-  // 4b. Support messages management
+  // Reply to support messages
   const handleReplySupport = async (e: FormEvent) => {
     e.preventDefault();
     if (!selectedSupportMessage || !supportReplyText.trim()) return;
@@ -447,14 +423,13 @@ export default function App() {
       if (res.ok) {
         setSupportReplySuccess(true);
         setSupportReplyText("");
-        // Refresh immediately
         fetchRESTSupportMessages();
         setTimeout(() => {
           setSelectedSupportMessage(null);
           setSupportReplySuccess(false);
         }, 1800);
       } else {
-        alert("تعذر تسليم الرد تلغرام");
+        alert("تعذر تسليم الرد تليجرام");
       }
     } catch (err) {
       console.error("Error replying to support message:", err);
@@ -464,6 +439,7 @@ export default function App() {
   };
 
   const handleDeleteSupportMessage = async (msgId: string) => {
+    if (!confirm("هل أنت متأكد من رغبتك في حذف رسالة الدعم هذه؟")) return;
     try {
       const res = await fetch(`/api/support-messages/${msgId}`, {
         method: "DELETE"
@@ -479,7 +455,28 @@ export default function App() {
     }
   };
 
-  // Save / Update a Subscription Menu
+  // Package / Menu Actions
+  const transliterateArabicToEnglish = (str: string): string => {
+    const map: { [key: string]: string } = {
+      'أ': 'a', 'إ': 'a', 'آ': 'a', 'ا': 'a', 'ب': 'b', 'ت': 't', 'ث': 'th', 'ج': 'j',
+      'ح': 'h', 'خ': 'kh', 'د': 'd', 'ذ': 'dh', 'ر': 'r', 'ز': 'z', 'س': 's', 'ش': 'sh',
+      'ص': 's', 'ض': 'd', 'ط': 't', 'ظ': 'z', 'ع': 'a', 'غ': 'gh', 'ف': 'f', 'ق': 'q',
+      'ك': 'k', 'ل': 'l', 'م': 'm', 'ن': 'n', 'ه': 'h', 'و': 'w', 'ي': 'y', 'ى': 'a',
+      'ة': 'h', 'ئ': 'e', 'ؤ': 'o', 'لا': 'la'
+    };
+    return str.split('').map(char => map[char] || char).join('');
+  };
+
+  const generateSafeId = (input: string): string => {
+    let safe = transliterateArabicToEnglish(input || "");
+    safe = safe.toLowerCase().trim().replace(/[^a-z0-9_]/g, "_").replace(/^_+|_+$/g, "");
+    if (!safe || safe.length < 2) {
+      const randomSuffix = Math.random().toString(36).substring(2, 7);
+      safe = `plan_${randomSuffix}`;
+    }
+    return safe;
+  };
+
   const handleSaveMenu = async (e: FormEvent) => {
     e.preventDefault();
     if (!editingMenu.id || !editingMenu.title) return;
@@ -487,11 +484,13 @@ export default function App() {
     setMenuActionStatus("idle");
     setMenuActionMessage("");
     
-    let menuId = (editingMenu.id || "").toLowerCase().trim().replace(/[^a-z0-9_]/g, "_").replace(/^_+|_+$/g, "");
+    let menuId = isEditingExistingMenu
+      ? (editingMenu.id || "").toLowerCase().trim().replace(/[^a-z0-9_]/g, "_").replace(/^_+|_+$/g, "")
+      : generateSafeId(editingMenu.id || "");
     
     try {
       if (!menuId || menuId.length < 2) {
-        throw new Error("اسم كود الباقة غير صالح أو قصير جداً. يرجى استخدام أحرف إنجليزية وأرقام فقط (مثال: plan_ultra)");
+        throw new Error("اسم كود الباقة غير صالح أو قصير جداً. يرجى استخدام أحرف إنجليزية وأرقام فقط.");
       }
 
       const payload = {
@@ -502,7 +501,6 @@ export default function App() {
         details: editingMenu.details || ""
       };
 
-      // Always save safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch("/api/menus", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -519,9 +517,7 @@ export default function App() {
         setMenuActionStatus("idle");
       }, 5000);
 
-      // Refresh state
       fetchRESTMenus();
-
       setShowMenuModal(false);
       setEditingMenu(null);
     } catch (err: any) {
@@ -531,42 +527,139 @@ export default function App() {
     }
   };
 
-  // Delete a Subscription Menu
   const handleDeleteMenu = async (id: string) => {
-    if (!confirm("هل أنت متأكد من رغبتك في حذف هذه الباقة؟ لن تظهر للمستخدمين على البوت.")) return;
+    if (!confirm("هل أنت متأكد من رغبتك في حذف هذه الباقة؟ لن تظهر للمستخدمين على البوت وستتم إزالتها.")) return;
     setMenuActionStatus("idle");
     setMenuActionMessage("");
     try {
-      // Always delete safely via backend API (handles Firestore Admin and local DB)
       const res = await fetch(`/api/menus/${id}`, {
         method: "DELETE"
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || "فشل مزود الخدمة في حذف الباقة المطلوبة.");
+        throw new Error(errData.error || "فشل حذف الاشتراك من المزود.");
       }
 
       setMenuActionStatus("success");
       setMenuActionMessage("تم حذف باقة الاشتراك بنجاح!");
+      fetchRESTMenus();
+      
       setTimeout(() => {
         setMenuActionStatus("idle");
       }, 5000);
-
-      // Refresh state
-      fetchRESTMenus();
     } catch (err: any) {
-      console.error("Delete menu error:", err);
+      console.error("Delete menu errored:", err);
       setMenuActionStatus("error");
-      setMenuActionMessage(err.message || "حدث خطأ أثناء محاولة حذف الباقة.");
+      setMenuActionMessage(err.message || "فشل إتمام عملية الحذف.");
     }
   };
 
-  // Set / Register Bot Webhook via bot server API
+  // Sync Database with Railway
+  const handleSyncPull = async () => {
+    if (!railwayUrl) {
+      setSyncStatus("error");
+      setSyncMessage("يرجى إدخال رابط سيرفر Railway أولاً.");
+      return;
+    }
+    if (!syncToken) {
+      setSyncStatus("error");
+      setSyncMessage("يرجى إدخال توكن البوت أو كلمة مرور اللوحة للمصادقة.");
+      return;
+    }
+
+    setSyncStatus("loading");
+    setSyncMessage("جاري الاتصال بسيرفر Railway وسحب البيانات عبر السيرفر لتخطي قيود الحماية (CORS)...");
+
+    try {
+      localStorage.setItem("sync_railway_url", railwayUrl);
+      localStorage.setItem("sync_token", syncToken);
+
+      const response = await fetch("/api/proxy-sync-pull", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ railwayUrl, syncToken })
+      });
+
+      const resData = await response.json();
+
+      if (!response.ok) {
+        throw new Error(resData.error || "فشل الاتصال بسيرفر Railway عبر البروكسي الآمن. تأكد من صحة الرابط والتوكن.");
+      }
+
+      setSyncStatus("success");
+      setSyncMessage("🎉 تمت مزامنة وسحب كافة البيانات من السحابة إلى جهازك المحلي بنجاح! تم تحديث المستخدمين والاشتراكات والطلبات وتجاوز قيود CORS.");
+
+      fetchRESTSettings();
+      fetchRESTMenus();
+      fetchRESTTickets();
+      fetchRESTSupportMessages();
+      fetchTelegramWebhookStatus();
+
+      const dbData = resData.data;
+      if (dbData?.settings?.global) {
+        const g = dbData.settings.global;
+        setTokenInput(g.botToken || "");
+        setAdminChatIdInput(g.adminChatId || "");
+        setWelcomeMsgInput(g.welcomeMessage || "");
+        setDashboardPasswordInput(g.dashboardPassword || "");
+      }
+    } catch (err: any) {
+      console.error("Sync pull error:", err);
+      setSyncStatus("error");
+      setSyncMessage(err.message || "حدث خطأ غير متوقع أثناء المزامنة.");
+    }
+  };
+
+  const handleSyncPush = async () => {
+    if (!railwayUrl) {
+      setSyncStatus("error");
+      setSyncMessage("يرجى إدخال رابط سيرفر Railway أولاً.");
+      return;
+    }
+    if (!syncToken) {
+      setSyncStatus("error");
+      setSyncMessage("يرجى إدخال توكن البوت أو كلمة مرور اللوحة للمصادقة.");
+      return;
+    }
+
+    if (!confirm("⚠️ تنبيه: هذا الإجراء سيقوم باستبدال قاعدة البيانات على سيرفر Railway بالكامل بقاعدتك المحلية الحالية (شاملاً باقات الاشتراكات والمستخدمين والرسائل). هل تريد الاستمرار؟")) {
+      return;
+    }
+
+    setSyncStatus("loading");
+    setSyncMessage("جاري نقل ورفع قاعدة البيانات المحلية إلى Railway عبر البروكسي لتخطي قيود CORS...");
+
+    try {
+      localStorage.setItem("sync_railway_url", railwayUrl);
+      localStorage.setItem("sync_token", syncToken);
+
+      const response = await fetch("/api/proxy-sync-push", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ railwayUrl, syncToken })
+      });
+
+      const resData = await response.json();
+
+      if (!response.ok) {
+        throw new Error(resData.error || "فشل رفع قاعدة البيانات إلى سيرفر Railway عبر البروكسي. تأكد من صحة الرابط والتوكن.");
+      }
+
+      setSyncStatus("success");
+      setSyncMessage("🚀 تم رفع وتحديث قاعدة بيانات سيرفر Railway بالكامل بنجاح عبر البروكسي! جميع الباقات والمستخدمين المحدثين الآن نشطون سحابياً.");
+    } catch (err: any) {
+      console.error("Sync push error:", err);
+      setSyncStatus("error");
+      setSyncMessage(err.message || "حدث خطأ غير متوقع أثناء دفع البيانات.");
+    }
+  };
+
+  // Bot Webhooks Actions
   const activateBotWebhook = async () => {
     setWebhookSettingStatus("idle");
     setWebhookErrorMsg("");
     try {
-      const res = await fetch("/api/setup-webhook", {
+      const res = await fetch("/api/register-webhook", {
         method: "POST",
         headers: { "Content-Type": "application/json" }
       });
@@ -582,7 +675,6 @@ export default function App() {
     }
   };
 
-  // Remove Bot Webhook to allow local testing
   const removeBotWebhook = async () => {
     setWebhookSettingStatus("idle");
     setWebhookErrorMsg("");
@@ -605,7 +697,6 @@ export default function App() {
     }
   };
 
-  // Toggle Polling
   const handleTogglePolling = async (enabled: boolean, claimMaster: boolean = false) => {
     try {
       const res = await fetch("/api/polling/toggle", {
@@ -651,8 +742,8 @@ export default function App() {
       setReplySuccess(true);
       setReplyMessage("");
       
-      // Update local state instantly so the admin sees the updated status
       setSelectedTicket((prev) => prev ? { ...prev, status, adminComment: replyMessage.trim() } : null);
+      fetchRESTTickets();
       setTimeout(() => setReplySuccess(false), 3000);
     } catch (err: any) {
       alert(err.message || "حدث خطأ");
@@ -668,7 +759,6 @@ export default function App() {
     }
 
     try {
-      // Optimistic update
       const ticketToDelete = tickets.find(t => t.id === id);
       setTickets(prev => prev.filter(t => t.id !== id));
       setTicketToDeleteId(null);
@@ -681,10 +771,8 @@ export default function App() {
         if (selectedTicket?.id === id) {
           setSelectedTicket(null);
         }
-        // Force refresh from server to be sure
         fetchRESTTickets();
       } else {
-        // Rollback on error
         if (ticketToDelete) {
           setTickets(prev => [ticketToDelete, ...prev].sort((a, b) => 
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -698,350 +786,332 @@ export default function App() {
     }
   };
 
-  // Filtering Tickets
+  // Filter & Search Tickets
   const filteredTickets = tickets.filter(t => {
+    const query = searchQuery.toLowerCase().trim();
     const matchesSearch = 
-      t.telegramName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      t.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      t.menuTitle.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (t.telegramUsername && t.telegramUsername.toLowerCase().includes(searchQuery.toLowerCase()));
+      t.telegramName.toLowerCase().includes(query) ||
+      t.email.toLowerCase().includes(query) ||
+      t.menuTitle.toLowerCase().includes(query) ||
+      (t.telegramUsername && t.telegramUsername.toLowerCase().includes(query));
     
     if (statusFilter === "all") return matchesSearch;
     return matchesSearch && t.status === statusFilter;
   });
 
-  // Calculate stats for Dashboard
-  const activeCount = tickets.filter(t => t.status === "approved").length;
-  const pendingCount = tickets.filter(t => t.status === "new").length;
-  const rejectedCount = tickets.filter(t => t.status === "rejected").length;
+  // Calculate high-level stats
   const totalCount = tickets.length;
-  const unrepliedSupportCount = supportMessages.filter(m => !m.replied).length;
+  const pendingCount = tickets.filter((t) => t.status === "new").length;
+  const approvedCount = tickets.filter((t) => t.status === "approved").length;
+  const rejectedCount = tickets.filter((t) => t.status === "rejected").length;
+  const activeCount = approvedCount;
 
-  if (checkingAuth) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-white font-sans" dir="rtl">
-        <div className="relative flex flex-col items-center space-y-4">
-          <div className="animate-spin h-10 w-10 border-4 border-cyan-500 rounded-full border-t-transparent shadow-lg shadow-cyan-500/20"></div>
-          <p className="text-slate-400 text-sm font-medium animate-pulse">جاري فحص الاتصال الأمن...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Not Logged In Landing Page
+  // Render Login Screen if not authenticated
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center px-4 relative overflow-hidden font-sans" dir="rtl">
-        {/* Background Gradients */}
-        <div className="absolute top-1/4 left-1/4 w-[350px] h-[350px] bg-cyan-600/10 rounded-full blur-[100px] -z-10"></div>
-        <div className="absolute bottom-1/4 right-1/4 w-[250px] h-[250px] bg-teal-600/10 rounded-full blur-[80px] -z-10"></div>
+      <div className="min-h-screen bg-slate-950 flex flex-col justify-center items-center p-4 relative overflow-hidden font-sans" dir="rtl">
+        {/* Decorative Grid and Ambient Lights */}
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#1f293710_1px,transparent_1px),linear-gradient(to_bottom,#1f293710_1px,transparent_1px)] bg-[size:4rem_4rem]" />
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
 
         <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }} 
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.4 }}
-          className="w-full max-w-md bg-slate-900/60 backdrop-blur-xl border border-white/5 p-8 rounded-3xl shadow-2xl relative"
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.5, ease: "easeOut" }}
+          className="w-full max-w-md bg-slate-900/85 backdrop-blur-xl border border-white/5 p-8 rounded-3xl shadow-2xl relative z-10 space-y-6 text-center"
         >
-          {/* Logo */}
-          <div className="flex flex-col items-center mb-6">
-            <div className="h-16 w-16 bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 rounded-2xl flex items-center justify-center shadow-inner mb-4">
-              <HeartPulse className="h-9 w-9 text-cyan-400" />
+          {/* Logo / Title */}
+          <div className="space-y-2">
+            <div className="mx-auto w-16 h-16 bg-cyan-500/10 border border-cyan-500/20 rounded-2xl flex items-center justify-center">
+              <Bot className="h-8 w-8 text-cyan-400" />
             </div>
-            <h1 className="text-2xl font-bold text-white tracking-tight">دكتور ميدكيت 🏥</h1>
-            <p className="text-slate-400 text-sm mt-2 text-center hover:text-slate-300 transition-colors">
-              لوحة التحكم وبوت الاشتراكات
-            </p>
+            <h1 className="text-2xl font-black text-white tracking-tight">لوحة تحكم MedKit 🛡️</h1>
+            <p className="text-xs text-slate-400">يرجى تسجيل الدخول للتحقق وإدارة باقات وطلبات العملاء.</p>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">كلمة المرور</label>
-              <input
-                type="password"
-                value={passwordInput}
-                onChange={(e) => setPasswordInput(e.target.value)}
-                className="w-full bg-slate-800/80 border border-white/5 rounded-xl px-4 py-3 text-white text-right focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
-                placeholder="أدخل كلمة المرور للوصول"
-                dir="auto"
-                autoFocus
-              />
+          {/* Form */}
+          <form onSubmit={handleLogin} className="space-y-4 text-right">
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-slate-400 block mr-1">كلمة مرور اللوحة:</label>
+              <div className="relative">
+                <input
+                  type="password"
+                  placeholder="أدخل كلمة مرور المسؤول"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/5 rounded-2xl py-3 px-4 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-500/50"
+                  required
+                />
+                <Key className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-600" />
+              </div>
             </div>
-            
-            {loginError && (
-              <p className="text-red-400 text-sm text-center">{loginError}</p>
-            )}
+
+            <AnimatePresence>
+              {loginError && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -5 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-xs flex items-center gap-2"
+                >
+                  <AlertCircle className="h-4 w-4" />
+                  <span>{loginError}</span>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <button
               type="submit"
               disabled={checkingAuth}
-              className="w-full py-4 bg-gradient-to-l from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 disabled:opacity-50 text-white font-semibold rounded-2xl transition-all shadow-xl shadow-cyan-500/10 hover:shadow-cyan-500/20 flex items-center justify-center gap-3 border border-white/10 dark:active:scale-95"
+              className="w-full py-3.5 bg-gradient-to-l from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-black rounded-2xl text-xs transition-all shadow-lg shadow-cyan-500/10 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
             >
-              {checkingAuth ? (
-                <div className="animate-spin h-5 w-5 border-2 border-white rounded-full border-t-transparent" />
-              ) : (
-                <>
-                  <LogIn className="h-5 w-5" />
-                  تسجيل الدخول
-                </>
-              )}
+              {checkingAuth ? <RefreshCw className="h-4.5 w-4.5 animate-spin" /> : <LogIn className="h-4.5 w-4.5" />}
+              تسجيل الدخول الآمن
             </button>
           </form>
-
-          <p className="text-center text-slate-500 text-xs mt-6">
-            النظام محمي ومقفل بكلمة المرور 🔐
-          </p>
         </motion.div>
       </div>
     );
   }
 
-  // Signed In - Main Dashboard Interface
   return (
-    <div className="min-h-screen bg-slate-950 font-sans text-slate-100 flex flex-col md:flex-row relative" dir="rtl">
+    <div className="min-h-screen bg-slate-950 text-slate-200 flex flex-col md:flex-row font-sans" dir="rtl">
       
-      {/* SIDEBAR NAVIGATION */}
-      <aside className="w-full md:w-80 bg-slate-900 border-l border-white/5 flex flex-col flex-shrink-0 z-10 p-5 gap-8">
+      {/* 1. RIGHT SIDEBAR - MODERN GLOWING NAVIGATION */}
+      <aside className="w-full md:w-80 bg-slate-900 border-l border-white/5 flex flex-col justify-between shrink-0 relative z-20">
         
-        {/* Admin Header Info */}
-        <div className="flex items-center gap-4 border-b border-white/5 pb-6">
-          <div className="h-12 w-12 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 rounded-xl flex items-center justify-center">
-            <HeartPulse className="h-7 w-7 text-cyan-400" />
-          </div>
-          <div className="overflow-hidden">
-            <h2 className="font-bold text-white truncate text-base">دكتور ميدكيت 🏥</h2>
-            <div className="flex items-center gap-2.5 mt-0.5">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-              <p className="text-xs text-slate-400 truncate font-mono">المدير العام</p>
+        {/* Sidebar Header & Brand info */}
+        <div>
+          <div className="p-6 border-b border-white/5 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-cyan-500/10 border border-cyan-500/20 rounded-xl flex items-center justify-center">
+                <Bot className="h-5.5 w-5.5 text-cyan-400" />
+              </div>
+              <div className="text-right">
+                <h2 className="text-sm font-extrabold text-white leading-tight">MedKit Admin 🛡️</h2>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <span className={`w-2 h-2 rounded-full ${webhookStatus?.configured ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`}></span>
+                  <span className="text-[10px] text-slate-400">
+                    {webhookStatus?.configured ? "البوت نشط سحابياً" : "غير نشط / تطوير"}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Navigation Menu Links */}
+          <nav className="p-4 space-y-1.5">
+            <button
+              onClick={() => setActiveTab("overview")}
+              className={`w-full text-right px-4 py-3 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer group ${
+                activeTab === "overview" 
+                  ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <LayoutDashboard className={`h-4.5 w-4.5 ${activeTab === "overview" ? "text-cyan-400" : "text-slate-500 group-hover:text-slate-300"}`} />
+                <span>لوحة القيادة (الرئيسية)</span>
+              </div>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("menus")}
+              className={`w-full text-right px-4 py-3 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer group ${
+                activeTab === "menus" 
+                  ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <MenuSquare className={`h-4.5 w-4.5 ${activeTab === "menus" ? "text-cyan-400" : "text-slate-500 group-hover:text-slate-300"}`} />
+                <span>عروض باقات الاشتراك</span>
+              </div>
+              <span className="text-[10px] font-mono bg-slate-950 px-2 py-0.5 rounded-full border border-white/5 text-slate-400 font-bold">
+                {menus.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab("tickets")}
+              className={`w-full text-right px-4 py-3 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer group ${
+                activeTab === "tickets" 
+                  ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <Ticket className={`h-4.5 w-4.5 ${activeTab === "tickets" ? "text-cyan-400" : "text-slate-500 group-hover:text-slate-300"}`} />
+                <span>طلبات التفعيل والكودات</span>
+              </div>
+              {pendingCount > 0 && (
+                <span className="text-[10px] bg-amber-500/15 text-amber-400 px-2 py-0.5 rounded-full border border-amber-500/20 font-bold animate-pulse">
+                  {pendingCount} معلق
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setActiveTab("support")}
+              className={`w-full text-right px-4 py-3 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer group ${
+                activeTab === "support" 
+                  ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <MessageSquare className={`h-4.5 w-4.5 ${activeTab === "support" ? "text-cyan-400" : "text-slate-500 group-hover:text-slate-300"}`} />
+                <span>رسائل الدعم الفني</span>
+              </div>
+              {supportMessages.filter(m => !m.replied).length > 0 && (
+                <span className="text-[10px] bg-cyan-500/10 text-cyan-400 px-2 py-0.5 rounded-full border border-cyan-500/20 font-bold">
+                  {supportMessages.filter(m => !m.replied).length} غير مقروء
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setActiveTab("settings")}
+              className={`w-full text-right px-4 py-3 rounded-xl text-xs font-bold transition-all flex items-center justify-between cursor-pointer group ${
+                activeTab === "settings" 
+                  ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20" 
+                  : "text-slate-400 hover:text-white hover:bg-slate-800/40"
+              }`}
+            >
+              <div className="flex items-center gap-3">
+                <Settings className={`h-4.5 w-4.5 ${activeTab === "settings" ? "text-cyan-400" : "text-slate-500 group-hover:text-slate-300"}`} />
+                <span>الإعدادات والمزامنة (Railway)</span>
+              </div>
+            </button>
+          </nav>
         </div>
 
-        {/* Navigation Menus List */}
-        <nav className="flex-1 flex flex-col gap-1.5">
-          <button
-            onClick={() => setActiveTab("overview")}
-            className={`w-full py-3.5 px-4 rounded-xl flex items-center gap-3.5 transition-all text-sm font-medium ${
-              activeTab === "overview" 
-                ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-bold" 
-                : "text-slate-400 hover:bg-slate-800/40 hover:text-white"
-            }`}
-          >
-            <LayoutDashboard className="h-5 w-5" />
-            الرئيسية والإحصائيات
-          </button>
-
-          <button
-            onClick={() => setActiveTab("tickets")}
-            className={`w-full py-3.5 px-4 rounded-xl flex items-center gap-3.5 transition-all text-sm font-medium relative ${
-              activeTab === "tickets" 
-                ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-bold" 
-                : "text-slate-400 hover:bg-slate-800/40 hover:text-white"
-            }`}
-          >
-            <Ticket className="h-5 w-5" />
-            طلبات الاشتراكات
-            {pendingCount > 0 && (
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 px-2.5 py-0.5 text-xs font-bold rounded-lg bg-cyan-500 text-slate-950 animate-pulse">
-                {pendingCount}
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab("support")}
-            className={`w-full py-3.5 px-4 rounded-xl flex items-center gap-3.5 transition-all text-sm font-medium relative ${
-              activeTab === "support" 
-                ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-bold" 
-                : "text-slate-400 hover:bg-slate-800/40 hover:text-white"
-            }`}
-          >
-            <MessageSquare className="h-5 w-5" />
-            رسائل المستخدمين 👥
-            {unrepliedSupportCount > 0 && (
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 px-2.5 py-0.5 text-xs font-bold rounded-lg bg-red-500 text-white animate-pulse">
-                {unrepliedSupportCount}
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab("menus")}
-            className={`w-full py-3.5 px-4 rounded-xl flex items-center gap-3.5 transition-all text-sm font-medium ${
-              activeTab === "menus" 
-                ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-bold" 
-                : "text-slate-400 hover:bg-slate-800/40 hover:text-white"
-            }`}
-          >
-            <MenuSquare className="h-5 w-5" />
-            باقات الاشتراكات
-          </button>
-
-          <button
-            onClick={() => setActiveTab("settings")}
-            className={`w-full py-3.5 px-4 rounded-xl flex items-center gap-3.5 transition-all text-sm font-medium ${
-              activeTab === "settings" 
-                ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-bold" 
-                : "text-slate-400 hover:bg-slate-800/40 hover:text-white"
-            }`}
-          >
-            <Settings className="h-5 w-5" />
-            إعدادات الويب هوك والبوت
-            {!settings?.botToken && (
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-red-400"></span>
-            )}
-          </button>
-        </nav>
-
-        {/* Sidebar Footer Logout action */}
-        <div className="border-t border-white/5 pt-6 flex flex-col gap-4">
-          {/* Bot State Notification */}
-          <div className="p-3.5 bg-slate-950/50 rounded-xl border border-white/5 text-right flex flex-col gap-1.5">
-            <span className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">حالة البوت</span>
-            {webhookStatus?.configured ? (
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                <span className="text-xs font-medium text-emerald-400 truncate">يعمل 24س مفعّل</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse"></span>
-                <span className="text-xs font-medium text-red-300">غير معرّف أو متوقف</span>
-              </div>
-            )}
+        {/* Sidebar Footer with user session and log-out */}
+        <div className="p-4 border-t border-white/5 space-y-3.5 bg-slate-950/20">
+          <div className="flex items-center justify-between flex-row-reverse text-xs">
+            <span className="text-[10px] text-slate-500">حساب المسؤول</span>
+            <span className="font-mono text-[11px] text-slate-400 font-bold">Admin Panel</span>
           </div>
-
           <button
             onClick={handleLogout}
-            className="w-full py-3 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white text-xs font-semibold rounded-xl transition-all flex items-center justify-center gap-2"
+            className="w-full py-2.5 bg-slate-950 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-white/5 hover:border-red-500/20 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
           >
             <LogOut className="h-4 w-4" />
-            تسجيل خروج الأدمن
+            تسجيل الخروج
           </button>
         </div>
+
       </aside>
 
-      {/* MAIN CONTAINER CONTENT VIEW */}
-      <main className="flex-1 flex flex-col overflow-y-auto px-4 py-8 md:px-10">
-
-        {/* MAIN DASHBOARD CONTENT ROUTING */}
-        <div className="flex-1 max-w-6xl w-full mx-auto">
+      {/* 2. MAIN WORKSPACE / LEFT PANEL */}
+      <main className="flex-1 flex flex-col min-h-screen relative overflow-x-hidden">
+        
+        {/* Upper Dashboard header bar */}
+        <header className="h-16 border-b border-white/5 px-6 sm:px-8 flex items-center justify-between bg-slate-900/45 backdrop-blur-md relative z-10">
+          <div className="text-right">
+            <h1 className="text-sm font-black text-white">
+              {activeTab === "overview" && "الرئيسية 📈"}
+              {activeTab === "menus" && "إدارة باقات الاشتراك 💳"}
+              {activeTab === "tickets" && "طلبات كودات التفعيل 🎟️"}
+              {activeTab === "support" && "دردشات الدعم الفني 💬"}
+              {activeTab === "settings" && "المزامنة السحابية والإعدادات ⚙️"}
+            </h1>
+          </div>
           
+          <div className="flex items-center gap-4">
+            <a 
+              href={webhookStatus?.botUser ? `https://t.me/${webhookStatus.botUser.username}` : "#"} 
+              target="_blank" 
+              rel="noreferrer" 
+              className="text-xs text-slate-400 hover:text-cyan-400 font-semibold transition-colors flex items-center gap-1.5"
+            >
+              <span>رابط البوت المباشر</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          </div>
+        </header>
+
+        {/* Content body wrapper */}
+        <div className="flex-1 p-6 sm:p-8 space-y-6">
           <AnimatePresence mode="wait">
             
-            {/* TAB 1: OVERVIEW & GENERAL STATS */}
+            {/* TAB 1: DASHBOARD OVERVIEW */}
             {activeTab === "overview" && (
               <motion.div
                 key="overview"
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.25 }}
-                className="space-y-8"
+                transition={{ duration: 0.2 }}
+                className="space-y-6 text-right"
               >
-                {/* Visual Banner */}
-                <div className="bg-gradient-to-l from-slate-900 via-slate-900 to-cyan-950/20 border border-white/5 p-8 rounded-3xl relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-6 shadow-xl">
-                  <div className="absolute top-0 left-0 w-44 h-44 bg-cyan-500/5 rounded-full blur-3xl"></div>
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-cyan-400">
-                      <Sparkles className="h-5 w-5 animate-pulse" />
-                      <span className="text-xs font-bold uppercase tracking-wider">مرحباً بك مجدداً 🩺</span>
+                {/* 4 Stats Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                  
+                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden group hover:border-cyan-500/20 transition-all">
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-400 font-bold">طلبات بانتظار المراجعة ⏳</p>
+                      <p className="text-3xl font-extrabold text-amber-400 font-mono">{pendingCount}</p>
                     </div>
-                    <h1 className="text-2xl md:text-3xl font-black text-white">لوحة تحكم بوت اشتراك منصة ميدكيت</h1>
-                    <p className="text-slate-400 text-sm max-w-xl">
-                      من هنا يمكنك إدارة وتفعيل طلبات الأكواد للمشتركين الذين يرسلون إيصالات الدفع والبريد الإلكتروني عبر البوت، لتصل لهم التفعيلات على التليجرام مباشرة بشكل آلي 24 ساعة.
-                    </p>
+                    <div className="p-3 bg-amber-500/10 rounded-xl text-amber-400">
+                      <Clock className="h-6 w-6" />
+                    </div>
                   </div>
-                  <div>
-                    <button
-                      onClick={fetchTelegramWebhookStatus}
-                      className="px-5 py-3 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-bold transition-all border border-white/5 flex items-center gap-2 cursor-pointer"
-                    >
-                      <RefreshCw className={`h-4.5 w-4.5 text-cyan-400 ${fetchingWebhook ? "animate-spin" : ""}`} />
-                      تحديث الحالة
-                    </button>
+
+                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden group hover:border-cyan-500/20 transition-all">
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-400 font-bold">الاشتراكات المفعّلة ✅</p>
+                      <p className="text-3xl font-extrabold text-emerald-400 font-mono">{approvedCount}</p>
+                    </div>
+                    <div className="p-3 bg-emerald-500/10 rounded-xl text-emerald-400">
+                      <CheckCircle2 className="h-6 w-6" />
+                    </div>
                   </div>
+
+                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden group hover:border-cyan-500/20 transition-all">
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-400 font-bold">إجمالي الطلبات المستلمة 📦</p>
+                      <p className="text-3xl font-extrabold text-slate-100 font-mono">{totalCount}</p>
+                    </div>
+                    <div className="p-3 bg-slate-800 rounded-xl text-slate-400">
+                      <Ticket className="h-6 w-6" />
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden group hover:border-cyan-500/20 transition-all">
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-400 font-bold">باقات الاشتراك النشطة 💳</p>
+                      <p className="text-3xl font-extrabold text-cyan-400 font-mono">{menus.length}</p>
+                    </div>
+                    <div className="p-3 bg-cyan-500/10 rounded-xl text-cyan-400">
+                      <MenuSquare className="h-6 w-6" />
+                    </div>
+                  </div>
+
                 </div>
 
-                {/* Dashboard Stats Cards Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-5">
-                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden">
-                    <div className="space-y-1">
-                      <p className="text-xs text-slate-400 font-medium">قيد المراجعة ⏳</p>
-                      <p className="text-4xl font-extrabold text-cyan-400 font-mono">{pendingCount}</p>
-                    </div>
-                    <div className="p-3 bg-cyan-500/10 rounded-2xl border border-cyan-500/20 text-cyan-500 shadow-inner">
-                      <Clock className="h-7 w-7" />
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden">
-                    <div className="space-y-1">
-                      <p className="text-xs text-slate-400 font-medium">الاشتراكات المفعلة ✅</p>
-                      <p className="text-4xl font-extrabold text-emerald-400 font-mono">{activeCount}</p>
-                    </div>
-                    <div className="p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20 text-emerald-500 shadow-inner">
-                      <CheckCircle2 className="h-7 w-7" />
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden">
-                    <div className="space-y-1">
-                      <p className="text-xs text-slate-400 font-medium">الاشتراكات المرفوضة ❌</p>
-                      <p className="text-4xl font-extrabold text-red-400 font-mono">{rejectedCount}</p>
-                    </div>
-                    <div className="p-3 bg-red-500/10 rounded-2xl border border-red-500/20 text-red-500 shadow-inner">
-                      <X className="h-7 w-7" />
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden">
-                    <div className="space-y-1">
-                      <p className="text-xs text-slate-400 font-medium">معدل القبول 📈</p>
-                      <p className="text-4xl font-extrabold text-emerald-400 font-mono">
-                        {tickets.filter(t => t.status !== "new").length > 0 
-                          ? `${Math.round((activeCount / tickets.filter(t => t.status !== 'new').length || 0) * 100)}%`
-                          : "—"
-                        }
-                      </p>
-                    </div>
-                    <div className="p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/20 text-emerald-500 shadow-inner">
-                      <CheckCircle2 className="h-7 w-7" />
-                    </div>
-                  </div>
-
-                  <div className="bg-slate-900 border border-white/5 p-6 rounded-2xl flex items-center justify-between relative overflow-hidden">
-                    <div className="space-y-1">
-                      <p className="text-xs text-slate-400 font-medium">إجمالي الطلبات 📊</p>
-                      <p className="text-4xl font-extrabold text-slate-200 font-mono">{totalCount}</p>
-                    </div>
-                    <div className="p-3 bg-slate-800 rounded-2xl border border-white/5 text-slate-400 shadow-inner">
-                      <Ticket className="h-7 w-7" />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Submissions Section Preview and Bot configuration Tips */}
+                {/* Grid layout with pending lists and cloud sync actions */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   
-                  {/* Latest unresolved requests */}
+                  {/* Left Column: Recent Orders */}
                   <div className="lg:col-span-2 bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-base font-bold text-white flex items-center gap-2">
-                        <Ticket className="h-5 w-5 text-cyan-400" />
-                        آخر طلبات بحاجة لمراجعة وتفعيل كود
-                      </h3>
+                    <div className="flex items-center justify-between flex-row-reverse">
                       <button
                         onClick={() => setActiveTab("tickets")}
                         className="text-xs font-bold text-cyan-400 hover:text-cyan-300 transition-colors"
                       >
-                        عرض الكل
+                        عرض كافة الطلبات
                       </button>
+                      <h3 className="text-base font-black text-white flex items-center gap-2">
+                        <Ticket className="h-5 w-5 text-cyan-400" />
+                        آخر الطلبات المعلقة التي بحاجة لتفعيل الكود
+                      </h3>
                     </div>
 
                     {tickets.filter(t => t.status === "new").length === 0 ? (
                       <div className="py-12 flex flex-col items-center justify-center text-slate-500 gap-3">
-                        <Check className="h-10 w-10 text-emerald-500/30 p-2 bg-emerald-500/10 rounded-full" />
-                        <p className="text-sm">رائع! لا يوجد أي طلبات اشتراك معلقة بانتظارك حالياً.</p>
+                        <Check className="h-10 w-10 text-emerald-500/30 p-2 bg-emerald-500/10 rounded-full animate-bounce" />
+                        <p className="text-sm font-semibold">رائع! لا يوجد أي طلبات اشتراك معلقة بانتظارك حالياً.</p>
                       </div>
                     ) : (
                       <div className="divide-y divide-white/5">
@@ -1052,21 +1122,21 @@ export default function App() {
                               setSelectedTicket(ticket);
                               setActiveTab("tickets");
                             }}
-                            className="py-4 flex items-center justify-between hover:bg-slate-800/10 px-2 rounded-xl transition-all cursor-pointer"
+                            className="py-4 flex items-center justify-between hover:bg-slate-800/20 px-3 rounded-xl transition-all cursor-pointer border border-transparent hover:border-white/5"
                           >
-                            <div className="space-y-1">
-                              <p className="font-bold text-xs text-white sm:text-sm">{ticket.telegramName}</p>
-                              <div className="flex items-center gap-3 text-xs text-slate-400">
-                                <span className="font-mono">{ticket.email}</span>
-                                <span className="text-slate-600">•</span>
-                                <span className="text-cyan-400 font-semibold">{ticket.menuTitle}</span>
-                              </div>
-                            </div>
                             <div className="flex items-center gap-3">
                               <span className="text-[10px] text-slate-500 font-mono">
                                 {new Date(ticket.createdAt).toLocaleDateString("ar-EG")}
                               </span>
-                              <ChevronLeft className="h-4.5 w-4.5 text-slate-600" />
+                              <ChevronLeft className="h-4 w-4 text-slate-600" />
+                            </div>
+                            <div className="space-y-1">
+                              <p className="font-bold text-xs text-white sm:text-sm">{ticket.telegramName}</p>
+                              <div className="flex items-center gap-3 text-xs text-slate-400 justify-end">
+                                <span className="text-cyan-400 font-bold">{ticket.menuTitle}</span>
+                                <span className="text-slate-600">•</span>
+                                <span className="font-mono text-slate-500">{ticket.email}</span>
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -1074,349 +1144,367 @@ export default function App() {
                     )}
                   </div>
 
-                  {/* Telegram Tips and Connection Panel */}
-                  <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 flex flex-col justify-between gap-6">
-                    <div className="space-y-4">
-                      <h3 className="text-base font-bold text-white flex items-center gap-2">
-                        <Bot className="h-5 w-5 text-cyan-400" />
-                        الارتباط بالبوت 🤖
+                  {/* Right Column: Connection & Quick Sync block */}
+                  <div className="space-y-6">
+                    
+                    {/* Cloud status overview */}
+                    <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
+                      <h3 className="text-sm font-black text-white flex items-center gap-2 justify-end">
+                        المزامنة مع Railway 🔁
+                        <Database className="h-4.5 w-4.5 text-cyan-400" />
                       </h3>
-                      
-                      <div className="p-4 bg-slate-950/60 border border-white/5 rounded-xl space-y-3.5 text-xs text-slate-300">
-                        {webhookStatus?.configured ? (
-                          <>
-                            <div className="flex items-center gap-2.5">
-                              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-                              <p className="font-semibold text-emerald-400">البوت متصل ومنشط بالكامل</p>
-                            </div>
-                            <p className="text-slate-400 leading-relaxed text-[11px]">
-                              يعمل البوت تلقائياً في الخلفية لاستقبال الرسائل وتفعيل الأكواد لعملائك دون الحاجة لترك متصفحك أو جهازك مفتوحاً.
-                            </p>
-                            {webhookStatus.botUser && (
-                              <div className="pt-2.5 border-t border-white/5 font-mono text-[11px] text-cyan-400">
-                                البوت: @{webhookStatus.botUser.username}
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <>
-                            <div className="flex items-center gap-2.5">
-                              <span className="w-2.5 h-2.5 rounded-full bg-red-400 animate-pulse"></span>
-                              <p className="font-semibold text-red-300">لم يتم ربط البوت بعد</p>
-                            </div>
-                            <p className="text-slate-400 leading-relaxed">
-                              يرجى تزويد البوت بالتوكن في تبويب "الإعدادات" ثم الضغط على "تفعيل الويب هوك" لتنشيطه.
-                            </p>
-                          </>
-                        )}
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        تسمح لك أداة المزامنة برفع أو سحب البيانات لحماية الباقات والطلبات والمستخدمين من الفقدان والتشغيل الدائم.
+                      </p>
+
+                      <div className="pt-2 border-t border-white/5 space-y-3">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-mono text-slate-300 max-w-[150px] truncate block">
+                            {railwayUrl ? railwayUrl.replace("https://", "") : "غير محدد"}
+                          </span>
+                          <span className="text-slate-400">سيرفر Railway:</span>
+                        </div>
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-bold text-cyan-400">
+                            {syncToken ? "🔑 جاهز وموثق" : "⚠️ غير مدخل"}
+                          </span>
+                          <span className="text-slate-400">توكن المصادقة:</span>
+                        </div>
                       </div>
+
+                      <button
+                        onClick={() => setActiveTab("settings")}
+                        className="w-full py-2.5 bg-slate-950 hover:bg-slate-850 text-cyan-400 hover:text-cyan-300 border border-cyan-500/20 hover:border-cyan-500/40 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <Settings className="h-4 w-4" />
+                        الذهاب إلى لوحة المزامنة والإعدادات
+                      </button>
                     </div>
 
-                    <button
-                      onClick={() => setActiveTab("settings")}
-                      className="w-full py-3.5 bg-gradient-to-l from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white font-bold rounded-xl text-xs transition-all shadow-lg hover:shadow-cyan-500/10 flex items-center justify-center gap-2"
-                    >
-                      تهيئة إعدادات تليجرام وبدء التفعيل
-                    </button>
+                    {/* Bot active status */}
+                    <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
+                      <h3 className="text-sm font-black text-white flex items-center gap-2 justify-end">
+                        تفعيل البوت والويب هوك 🤖
+                        <Bot className="h-4.5 w-4.5 text-cyan-400" />
+                      </h3>
+
+                      <div className="p-3 bg-slate-950 rounded-xl text-xs flex items-center justify-between">
+                        <span className={`w-2.5 h-2.5 rounded-full ${webhookStatus?.configured ? "bg-emerald-500" : "bg-amber-500"}`}></span>
+                        <span className="font-bold">
+                          {webhookStatus?.configured ? "البوت متصل بالكامل" : "وضعية التطوير المحلي"}
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={activateBotWebhook}
+                        className="w-full py-3 bg-gradient-to-l from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <RefreshCw className="h-4 w-4 animate-spin-slow" />
+                        تنشيط/تحديث الويب هوك السحابي
+                      </button>
+                    </div>
+
                   </div>
 
                 </div>
               </motion.div>
             )}
 
-            {/* TAB 2: TICKETS INBOX FOR REVIEWING CREDITS */}
+            {/* TAB 2: PLANS / SUBSCRIPTIONS MANAGEMENT */}
+            {activeTab === "menus" && (
+              <motion.div
+                key="menus"
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.2 }}
+                className="space-y-6 text-right"
+              >
+                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                  <div className="mr-auto sm:mr-0">
+                    <button
+                      onClick={() => {
+                        setEditingMenu({ id: "", title: "", price: "", description: "", details: "" });
+                        setIsEditingExistingMenu(false);
+                        setShowMenuModal(true);
+                      }}
+                      className="py-3 px-5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold rounded-xl text-xs transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-cyan-500/10"
+                    >
+                      <Plus className="h-4.5 w-4.5" />
+                      إضافة باقة جديدة 💳
+                    </button>
+                  </div>
+                  <div className="space-y-1">
+                    <h2 className="text-xl font-black text-white">باقات الاشتراك وعروض تليجرام 💳</h2>
+                    <p className="text-xs text-slate-400">تحكم بالباقات التي تظهر لعملائك بالبوت، وعروض الأسعار التفعيلية مع الكودات.</p>
+                  </div>
+                </div>
+
+                {menuActionMessage && (
+                  <div className={`p-4 rounded-xl border text-xs font-semibold ${
+                    menuActionStatus === "success" 
+                      ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" 
+                      : "bg-red-500/10 border-red-500/20 text-red-400"
+                  }`}>
+                    {menuActionMessage}
+                  </div>
+                )}
+
+                {/* Grid of packages */}
+                {menus.length === 0 ? (
+                  <div className="bg-slate-900 border border-white/5 rounded-2xl p-16 text-center text-slate-500 space-y-4 flex flex-col items-center justify-center">
+                    <MenuSquare className="h-12 w-12 text-slate-700 animate-pulse" />
+                    <p className="text-sm font-semibold">لم تقم بإضافة أي باقة اشتراك حتى الآن.</p>
+                    <button
+                      onClick={() => {
+                        setEditingMenu({ id: "", title: "", price: "", description: "", details: "" });
+                        setIsEditingExistingMenu(false);
+                        setShowMenuModal(true);
+                      }}
+                      className="text-xs font-bold text-cyan-400 hover:underline cursor-pointer"
+                    >
+                      اضغط هنا لإضافة باقتك الأولى وسحبها للتليجرام
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {menus.map((menu) => (
+                      <div 
+                        key={menu.id} 
+                        className="bg-slate-900 border border-white/5 rounded-2xl p-6 flex flex-col justify-between hover:border-cyan-500/20 transition-all group relative"
+                      >
+                        <div className="space-y-4">
+                          <div className="flex items-start justify-between">
+                            <span className="font-mono text-[10px] bg-slate-950 text-slate-400 px-2.5 py-1 rounded-lg border border-white/5 font-bold uppercase">
+                              ID: {menu.id}
+                            </span>
+                            <div className="text-right">
+                              <h3 className="font-black text-white text-base leading-tight group-hover:text-cyan-400 transition-colors">
+                                {menu.title}
+                              </h3>
+                              <p className="text-cyan-400 text-xs font-extrabold mt-1.5 font-mono">{menu.price}</p>
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-slate-400 leading-relaxed text-right min-h-[40px] line-clamp-3">
+                            {menu.description || "لا يوجد وصف مختصر."}
+                          </p>
+
+                          {menu.details && (
+                            <div className="p-3 bg-slate-950/60 rounded-xl border border-white/5 text-[11px] text-slate-500 font-mono text-left max-h-[100px] overflow-y-auto overflow-x-hidden">
+                              {menu.details}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Card actions */}
+                        <div className="flex items-center gap-2 border-t border-white/5 pt-4 mt-6">
+                          <button
+                            onClick={() => {
+                              setEditingMenu(menu);
+                              setIsEditingExistingMenu(true);
+                              setShowMenuModal(true);
+                            }}
+                            className="flex-1 py-2 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <Edit2 className="h-3.5 w-3.5" />
+                            تعديل الباقة
+                          </button>
+                          
+                          <button
+                            onClick={() => handleDeleteMenu(menu.id)}
+                            className="py-2 px-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-xs font-bold transition-all flex items-center justify-center cursor-pointer"
+                            title="حذف الباقة"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            )}
+
+            {/* TAB 3: TICKETS / ORDER MANAGER */}
             {activeTab === "tickets" && (
               <motion.div
                 key="tickets"
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.25 }}
-                className="space-y-6"
+                transition={{ duration: 0.2 }}
+                className="space-y-6 text-right"
               >
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div>
-                    <h1 className="text-xl md:text-2xl font-extrabold text-white">وارد طلبات تفعيل الأكواد 📥</h1>
-                    <p className="text-xs text-slate-400 mt-1">
-                      راجع إيميلات المشتركين وصور التحويل البنكي أوVodafone Cash التي أرسلوها للبوت للتحقق والتفعيل.
-                    </p>
+                {/* Upper control filters */}
+                <div className="bg-slate-900 border border-white/5 p-4 rounded-2xl flex flex-col md:flex-row gap-4 items-center justify-between">
+                  {/* Filter Pills */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto w-full md:w-auto">
+                    <button
+                      onClick={() => setStatusFilter("all")}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        statusFilter === "all" ? "bg-cyan-500 text-slate-950" : "bg-slate-950 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      الكل ({tickets.length})
+                    </button>
+                    <button
+                      onClick={() => setStatusFilter("new")}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        statusFilter === "new" ? "bg-amber-400 text-slate-950" : "bg-slate-950 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      قيد الانتظار ({tickets.filter(t => t.status === "new").length})
+                    </button>
+                    <button
+                      onClick={() => setStatusFilter("approved")}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        statusFilter === "approved" ? "bg-emerald-400 text-slate-950" : "bg-slate-950 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      مقبولة ({tickets.filter(t => t.status === "approved").length})
+                    </button>
+                    <button
+                      onClick={() => setStatusFilter("rejected")}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                        statusFilter === "rejected" ? "bg-red-400 text-slate-950" : "bg-slate-950 text-slate-400 hover:text-white"
+                      }`}
+                    >
+                      مرفوضة ({tickets.filter(t => t.status === "rejected").length})
+                    </button>
                   </div>
-                  
-                  {/* Quick stats inline */}
-                  <div className="flex items-center gap-2 text-xs font-mono font-bold">
-                    <span className="px-3 py-1.5 bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 rounded-lg">قيد الانتظار: {pendingCount}</span>
-                    <span className="px-3 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-lg">مقبول: {activeCount}</span>
-                  </div>
-                </div>
 
-                {/* Search and filter panel */}
-                <div className="flex flex-col sm:flex-row gap-3 bg-slate-900 border border-white/5 p-4 rounded-xl">
+                  {/* Search box input */}
                   <input
                     type="text"
+                    placeholder="ابحث باسم العميل أو الباقة أو البريد الإلكتروني..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="ابحث بالاسم، الإيميل، الباقة أو اسم العميل..."
-                    className="flex-1 bg-slate-950/60 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
+                    className="w-full md:w-80 bg-slate-950 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none"
                   />
-                  
-                  <div className="flex gap-2">
-                    {["all", "new", "approved", "rejected"].map((filter) => (
-                      <button
-                        key={filter}
-                        onClick={() => setStatusFilter(filter)}
-                        className={`px-3 py-2.5 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
-                          statusFilter === filter 
-                            ? "bg-cyan-500 text-slate-950 font-bold shadow-md shadow-cyan-500/10" 
-                            : "bg-slate-950 hover:bg-slate-800/60 text-slate-400 hover:text-white"
-                        }`}
-                      >
-                        {filter === "all" && "الكل"}
-                        {filter === "new" && "قيد الانتظار ⏳"}
-                        {filter === "approved" && "مقبول ✅"}
-                        {filter === "rejected" && "مرفوض ❌"}
-                      </button>
-                    ))}
-                  </div>
                 </div>
 
-                {/* Split layout: tickets list & details view */}
+                {/* Main Tickets Screen split panel */}
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                   
-                  {/* Left Column: Tickets List */}
-                  <div className="lg:col-span-5 bg-slate-900 border border-white/5 rounded-2xl max-h-[650px] overflow-y-auto divide-y divide-white/5">
-                    {filteredTickets.length === 0 ? (
-                      <div className="py-24 text-center text-slate-500 space-y-3">
-                        <AlertCircle className="h-10 w-10 text-slate-600 mx-auto" />
-                        <p className="text-xs">لا يوجد أي طلبات تطابق معايير البحث والفلترة حالياً.</p>
-                      </div>
-                    ) : (
-                      filteredTickets.map((ticket) => {
-                        const isSelected = selectedTicket?.id === ticket.id;
-                        return (
-                          <div
-                            key={ticket.id}
-                            onClick={() => {
-                              setSelectedTicket(ticket);
-                              setReplyMessage(ticket.adminComment || "");
-                            }}
-                            className={`p-4 flex flex-col gap-2.5 cursor-pointer transition-all ${
-                              isSelected 
-                                ? "bg-cyan-500/5 border-r-4 border-cyan-500" 
-                                : "hover:bg-slate-800/20"
-                            }`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <h4 className="font-bold text-xs text-white sm:text-sm">{ticket.telegramName}</h4>
-                              <div className="flex items-center gap-2">
-                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${
-                                  ticket.status === "approved" 
-                                    ? "bg-emerald-500/10 text-emerald-400" 
-                                    : ticket.status === "rejected" 
-                                      ? "bg-red-500/10 text-red-500" 
-                                      : "bg-cyan-500/10 text-cyan-400 animate-pulse"
-                                }`}>
-                                  {ticket.status === "approved" && "مقبول"}
-                                  {ticket.status === "rejected" && "مرفوض"}
-                                  {ticket.status === "new" && "جديد"}
-                                </span>
-                                <div className="flex items-center gap-1.5">
-                                  {ticketToDeleteId === ticket.id ? (
-                                    <div className="flex items-center bg-red-500/20 rounded-xl p-1 animate-in fade-in slide-in-from-right-2 duration-300">
-                                      <button 
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleDeleteTicket(ticket.id, true);
-                                        }}
-                                        className="px-2 py-1 text-[10px] font-bold text-red-500 hover:bg-red-500 hover:text-white rounded-lg transition-all"
-                                      >
-                                        حذف؟
-                                      </button>
-                                      <button 
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setTicketToDeleteId(null);
-                                        }}
-                                        className="p-1 text-slate-400 hover:text-white"
-                                      >
-                                        <X className="h-3 w-3" />
-                                      </button>
-                                    </div>
-                                  ) : (
-                                    <button 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleDeleteTicket(ticket.id);
-                                      }}
-                                      className="p-2 hover:bg-red-500/20 text-slate-400 hover:text-red-500 rounded-xl transition-all relative z-10"
-                                      title="حذف الطلب"
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </button>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-between text-xs text-slate-400">
-                              <span className="font-mono truncate max-w-[200px]">{ticket.email}</span>
-                              <span className="font-bold text-cyan-400 text-[11px] bg-slate-950 px-2 py-0.5 rounded-lg border border-white/5">
-                                {ticket.menuTitle}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center justify-between text-[11px] text-slate-500 border-t border-white/5 pt-2 mt-1">
-                              <span>@{ticket.telegramUsername || "بدون معرف"}</span>
-                              <span className="font-mono">{new Date(ticket.createdAt).toLocaleDateString("ar-EG")}</span>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-
-                  {/* Right Column: Dynamic Ticket Verification & Approvals Area */}
-                  <div className="lg:col-span-7">
+                  {/* Left Column: Ticket details screen */}
+                  <div className="lg:col-span-7 bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-6">
                     {selectedTicket ? (
                       <motion.div 
-                        initial={{ opacity: 0, scale: 0.98 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-6"
+                        key={selectedTicket.id}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="space-y-6"
                       >
-                        {/* Detail Header */}
-                        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4 border-b border-white/5 pb-4">
-                          <div className="flex-1">
-                            <span className="text-[10px] uppercase font-bold tracking-wider text-cyan-400">طلب تفعيل كود ميدكيت مشترك</span>
-                            <div className="flex items-center justify-between mt-1">
-                              <h3 className="text-lg font-bold text-white">{selectedTicket.telegramName}</h3>
-                              {ticketToDeleteId === selectedTicket.id ? (
-                                <div className="flex items-center gap-2 bg-red-500/10 p-1.5 rounded-xl border border-red-500/20 animate-in fade-in zoom-in-95 duration-200">
-                                  <span className="text-[10px] font-bold text-red-400 px-1">تأكيد الحذف؟</span>
-                                  <button 
-                                    onClick={() => handleDeleteTicket(selectedTicket.id, true)}
-                                    className="px-3 py-1 bg-red-500 text-white text-[10px] font-bold rounded-lg hover:bg-red-600 transition-all"
-                                  >
-                                    نعم
-                                  </button>
-                                  <button 
-                                    onClick={() => setTicketToDeleteId(null)}
-                                    className="p-1 px-2 text-[10px] text-slate-400 hover:text-white"
-                                  >
-                                    إلغاء
-                                  </button>
-                                </div>
-                              ) : (
-                                <button 
-                                  onClick={() => handleDeleteTicket(selectedTicket.id)}
-                                  className="sm:hidden p-2 bg-red-500/10 text-red-400 rounded-xl hover:bg-red-500/20 transition-all"
-                                >
-                                  <Trash2 className="h-4 w-4" />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                          
-                          {/* Active State indicator */}
-                          <div className="flex items-center gap-3">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-slate-500">حالة الطلب:</span>
-                              <span className={`px-2.5 py-1 text-xs font-bold rounded-xl border ${
-                                selectedTicket.status === "approved" 
-                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" 
-                                  : selectedTicket.status === "rejected" 
-                                    ? "bg-red-500/10 text-red-500 border-red-500/20" 
-                                    : "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 animate-pulse"
+                        {/* Upper card info */}
+                        <div className="flex items-start justify-between border-b border-white/5 pb-4">
+                          <button
+                            onClick={() => handleDeleteTicket(selectedTicket.id, true)}
+                            className="py-2 px-3.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                            حذف الطلب نهائياً
+                          </button>
+
+                          <div className="text-right">
+                            <h3 className="font-black text-white text-lg">{selectedTicket.telegramName}</h3>
+                            <div className="flex items-center gap-2 mt-1.5 justify-end">
+                              <span className={`px-2 py-0.5 rounded-lg text-[10px] font-bold ${
+                                selectedTicket.status === "new" 
+                                  ? "bg-amber-400/10 text-amber-400 border border-amber-400/20" 
+                                  : selectedTicket.status === "approved"
+                                    ? "bg-emerald-400/10 text-emerald-400 border border-emerald-400/20"
+                                    : "bg-red-400/10 text-red-400 border border-red-400/20"
                               }`}>
-                                {selectedTicket.status === "approved" && "تم التفعيل مسبقاً ✅"}
-                                {selectedTicket.status === "rejected" && "تم رفض الطلب ❌"}
-                                {selectedTicket.status === "new" && "بانتظار المراجعة والتحويل ⏳"}
+                                {selectedTicket.status === "new" && "قيد المراجعة ⏳"}
+                                {selectedTicket.status === "approved" && "مقبول ومفعّل ✅"}
+                                {selectedTicket.status === "rejected" && "مرفوض ❌"}
+                              </span>
+                              <span className="text-xs text-slate-400 font-mono">
+                                {new Date(selectedTicket.createdAt).toLocaleString("ar-EG")}
                               </span>
                             </div>
-                            <button 
-                              onClick={() => handleDeleteTicket(selectedTicket.id)}
-                              className="hidden sm:flex p-2.5 bg-red-500/10 text-red-400 rounded-xl border border-red-500/20 hover:bg-red-500/20 transition-all"
-                              title="حذف الطلب نهائياً"
-                            >
-                              <Trash2 className="h-4.5 w-4.5" />
-                            </button>
                           </div>
                         </div>
 
-                        {/* User Metadata */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-slate-950/40 p-4 border border-white/5 rounded-xl">
-                          <div className="space-y-1">
-                            <span className="text-[10px] text-slate-500 block">البريد الإلكتروني للعميل المسجل 📩</span>
-                            <div className="flex items-center gap-1.5 font-mono text-xs text-cyan-400">
-                              <span className="select-all truncate">{selectedTicket.email}</span>
-                              <button 
-                                onClick={() => handleCopy(selectedTicket.email, "email")}
-                                className="p-1 hover:bg-slate-800 rounded text-slate-500 hover:text-white transition-colors"
-                              >
-                                {copiedSetting === "email" ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
-                              </button>
-                            </div>
+                        {/* Bento attributes specs */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-right">
+                          <div className="p-3.5 bg-slate-950 rounded-xl space-y-1">
+                            <span className="text-[10px] text-slate-500">الباقة المختارة</span>
+                            <span className="text-xs text-cyan-400 font-bold block">{selectedTicket.menuTitle}</span>
+                          </div>
+                          
+                          <div className="p-3.5 bg-slate-950 rounded-xl space-y-1">
+                            <span className="text-[10px] text-slate-500">البريد الإلكتروني</span>
+                            <span className="text-xs text-slate-200 font-mono block truncate">{selectedTicket.email}</span>
                           </div>
 
-                          <div className="space-y-1">
-                            <span className="text-[10px] text-slate-500 block">الباقة والاشتراك المطلوب 💳</span>
-                            <span className="text-xs text-white font-bold block">{selectedTicket.menuTitle}</span>
-                          </div>
-
-                          <div className="space-y-1">
-                            <span className="text-[10px] text-slate-500 block">حساب التليجرام الخاص به 🔗</span>
+                          <div className="p-3.5 bg-slate-950 rounded-xl space-y-1">
+                            <span className="text-[10px] text-slate-500">معرف التليجرام (@)</span>
                             {selectedTicket.telegramUsername ? (
                               <a 
                                 href={`https://t.me/${selectedTicket.telegramUsername}`} 
                                 target="_blank" 
                                 rel="noreferrer" 
-                                className="text-xs text-cyan-400 font-semibold hover:underline flex items-center gap-1 w-fit"
+                                className="text-xs text-cyan-400 font-bold hover:underline block"
                               >
                                 @{selectedTicket.telegramUsername}
-                                <ExternalLink className="h-3.5 w-3.5" />
                               </a>
                             ) : (
-                              <span className="text-xs text-slate-500">لا يوجد معرّف عالي (@)</span>
+                              <span className="text-xs text-slate-500 block">لا يوجد</span>
                             )}
                           </div>
 
-                          <div className="space-y-1">
-                            <span className="text-[10px] text-slate-500 block">شات ID للرد تليجرام 🆔</span>
+                          <div className="p-3.5 bg-slate-950 rounded-xl space-y-1">
+                            <span className="text-[10px] text-slate-500">شات ID تليجرام</span>
                             <span className="text-xs text-slate-400 font-mono block">{selectedTicket.telegramUserId}</span>
                           </div>
                         </div>
 
-                        {/* Image Receipt Display */}
+                        {/* Image receipt */}
                         <div className="space-y-2">
-                          <span className="text-xs text-slate-400 font-medium block">إيصال التحويل البنكي أو لقطة الشاشة 🖼️</span>
-                          <div className="relative group bg-slate-950 rounded-xl overflow-hidden border border-white/5 flex items-center justify-center min-h-[300px]">
+                          <span className="text-xs text-slate-400 font-bold block">لقطة شاشة أو إيصال تفعيل الاشتراك:</span>
+                          <div className="relative bg-slate-950 border border-white/5 rounded-2xl overflow-hidden flex items-center justify-center min-h-[250px] p-2">
                             {selectedTicket.receiptPhotoUrl ? (
                               <img 
                                 src={selectedTicket.receiptPhotoUrl} 
-                                alt="Receipt" 
-                                className="max-w-full max-h-[400px] object-contain"
+                                alt="Payment Receipt" 
+                                className="max-w-full max-h-[350px] object-contain rounded-lg"
+                                referrerPolicy="no-referrer"
                               />
                             ) : (
-                              <div className="flex flex-col items-center justify-center text-slate-600 gap-2">
-                                <Image className="h-10 w-10 animate-pulse text-slate-700" />
-                                <p className="text-xs">حدث خطأ أو لم يتم تزويد البوت بصورة دقيقة</p>
+                              <div className="text-slate-600 text-center space-y-2">
+                                <Image className="h-10 w-10 text-slate-700 mx-auto" />
+                                <p className="text-xs">لم يتم رفع صورة إيصال الدفع</p>
                               </div>
                             )}
-                            <div className="absolute top-3 left-3 flex gap-2">
+                            {selectedTicket.receiptPhotoUrl && (
                               <a 
                                 href={selectedTicket.receiptPhotoUrl} 
                                 download={`receipt-${selectedTicket.telegramName}.jpg`}
-                                className="p-2.5 bg-slate-900/90 hover:bg-slate-800/100 backdrop-blur-sm rounded-lg text-white border border-white/10 text-xs font-medium flex items-center gap-1.5 cursor-pointer shadow-lg transition-all"
+                                target="_blank"
+                                rel="noreferrer"
+                                className="absolute top-3 left-3 bg-slate-900/90 hover:bg-slate-850 border border-white/5 px-3 py-1.5 rounded-lg text-[10px] font-bold text-white flex items-center gap-1.5 transition-all shadow-md"
                               >
-                                <ExternalLink className="h-4 w-4" />
-                                فتح في نافذة مستقلة
+                                <ExternalLink className="h-3 w-3" />
+                                فتح الصورة بكامل حجمها
                               </a>
-                            </div>
+                            )}
                           </div>
                         </div>
 
-                        {/* Form controls to Reply */}
-                        <div className="space-y-3.5 border-t border-white/5 pt-5">
+                        {/* Admin comment displaying */}
+                        {selectedTicket.adminComment && (
+                          <div className="p-4 bg-slate-950 border-r-2 border-cyan-500 rounded-xl space-y-1 text-xs">
+                            <span className="text-slate-500 font-bold">تعليق الإدارة السابق:</span>
+                            <p className="text-slate-300 leading-relaxed font-semibold">{selectedTicket.adminComment}</p>
+                          </div>
+                        )}
+
+                        {/* Actions Response editor box */}
+                        <div className="space-y-4 pt-4 border-t border-white/5">
                           <label className="text-xs text-slate-400 font-bold block">
-                            توجيه الرد والقرار للعميل (سيصله الرد والتفعيل في رسالة خاصة على التليجرام فورا) ✍️
+                            توجيه الرد والقرار للعميل (سيصله الرد والتفعيل مباشرة على التليجرام):
                           </label>
                           <div className="space-y-0">
                             {renderFormatToolbar("ticket-reply-textarea", replyMessage, setReplyMessage)}
@@ -1424,30 +1512,29 @@ export default function App() {
                               id="ticket-reply-textarea"
                               value={replyMessage}
                               onChange={(e) => setReplyMessage(e.target.value)}
-                              placeholder="مثال: تم تفعيل حسابك بنجاح! يمكنك الآن تسجيل الدخول للمنصة والمشاهدة. أو: الإيصال غير سليم يرجى التحقق وإعادة الإرسال."
+                              placeholder="اكتب هنا تفعيل الكود، أو إرشادات المشاهدة، أو سبب رفض الإيصال..."
                               rows={4}
-                              className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-4 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50 font-sans"
+                              className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-4 text-xs text-slate-200 placeholder-slate-600 focus:outline-none"
                             />
                           </div>
 
-                          {/* Action Buttons */}
                           <div className="flex flex-col sm:flex-row gap-3">
                             <button
                               onClick={() => submitTicketReply("approved")}
                               disabled={submittingReply}
-                              className="flex-1 py-3.5 bg-gradient-to-l from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-50 text-slate-950 font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-950/20 bg-emerald-400 text-slate-950"
+                              className="flex-1 py-3 bg-gradient-to-l from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-slate-950 font-black rounded-xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer bg-emerald-400 disabled:opacity-50"
                             >
-                              <Check className="h-4.5 w-4.5" />
-                              تم التحقق والموافقة على الاشتراك ✅
+                              <Check className="h-4 w-4" />
+                              قبول وتفعيل كود الاشتراك العميل
                             </button>
 
                             <button
                               onClick={() => submitTicketReply("rejected")}
                               disabled={submittingReply}
-                              className="flex-1 py-3.5 bg-gradient-to-l from-red-600 to-rose-600 hover:from-red-500 hover:from-rose-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-red-950/20"
+                              className="flex-1 py-3 bg-gradient-to-l from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-black rounded-xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                             >
                               <X className="h-4.5 w-4.5" />
-                              رفض الطلب وإرسال توضيح ❌
+                              رفض الطلب وإرسال توضيح
                             </button>
                           </div>
 
@@ -1459,22 +1546,72 @@ export default function App() {
                                 exit={{ opacity: 0 }}
                                 className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs text-center flex items-center justify-center gap-2"
                               >
-                                <CheckCircle2 className="h-4.5 w-4.5" />
+                                <CheckCircle2 className="h-4 w-4" />
                                 تم إرسال رد الإدارة إلى المستخدم على حسابه التليجرام بنجاح وتحديث قاعدة البيانات!
                               </motion.div>
                             )}
                           </AnimatePresence>
+
                         </div>
+
                       </motion.div>
                     ) : (
-                      <div className="bg-slate-900 border border-white/5 rounded-2xl p-12 text-center text-slate-500 space-y-4 flex flex-col items-center justify-center min-h-[450px]">
-                        <div className="h-16 w-16 bg-slate-950 border border-white/5 rounded-full flex items-center justify-center mb-2">
-                          <Ticket className="h-8 w-8 text-slate-700 animate-pulse" />
+                      <div className="bg-slate-900 border border-white/5 rounded-2xl p-12 text-center text-slate-500 space-y-4 flex flex-col items-center justify-center min-h-[350px]">
+                        <div className="h-14 w-14 bg-slate-950 rounded-full border border-white/5 flex items-center justify-center">
+                          <Ticket className="h-6 w-6 text-slate-700 animate-pulse" />
                         </div>
-                        <h3 className="text-white font-bold text-base">لا توجد تفاصيل معروضة</h3>
-                        <p className="text-xs max-w-sm leading-relaxed">
-                          اختر أي طلب اشتراك أو إيصال تفعيل من القائمة الجانبية في اليمين للتحقق وبدء عمل الإجراءات الفورية.
+                        <h3 className="text-white font-bold text-sm">لم يتم اختيار أي طلب بعد</h3>
+                        <p className="text-xs leading-relaxed max-w-sm">
+                          اختر أي طلب اشتراك من قائمة الطلبات في اليسار للتحقق من الإيصال وبدء إجراءات القبول أو الرفض الفوري.
                         </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right Column: Ticket Lists */}
+                  <div className="lg:col-span-5 bg-slate-900 border border-white/5 rounded-2xl p-4 space-y-3.5">
+                    <h3 className="text-sm font-black text-white px-2">قائمة طلبات التفعيل</h3>
+                    
+                    {filteredTickets.length === 0 ? (
+                      <p className="text-xs text-slate-500 text-center py-12">لا توجد طلبات تفعيل تطابق البحث أو الفلتر.</p>
+                    ) : (
+                      <div className="space-y-2 max-h-[550px] overflow-y-auto pr-1">
+                        {filteredTickets.map((t) => (
+                          <div
+                            key={t.id}
+                            onClick={() => {
+                              setSelectedTicket(t);
+                              setReplyMessage("");
+                            }}
+                            className={`p-3.5 rounded-xl border transition-all cursor-pointer text-right space-y-2 ${
+                              selectedTicket?.id === t.id
+                                ? "bg-cyan-500/10 border-cyan-500/30 text-white"
+                                : "bg-slate-950/60 border-white/5 hover:border-white/10 text-slate-300"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] text-slate-500 font-mono">
+                                {new Date(t.createdAt).toLocaleDateString("ar-EG")}
+                              </span>
+                              <p className="font-extrabold text-xs">{t.telegramName}</p>
+                            </div>
+
+                            <div className="flex items-center justify-between text-[11px] text-slate-400">
+                              <span className={`px-2 py-0.5 rounded text-[8px] font-bold ${
+                                t.status === "new"
+                                  ? "bg-amber-400/10 text-amber-400"
+                                  : t.status === "approved"
+                                    ? "bg-emerald-400/10 text-emerald-400"
+                                    : "bg-red-400/10 text-red-400"
+                              }`}>
+                                {t.status === "new" && "قيد الانتظار"}
+                                {t.status === "approved" && "مقبول"}
+                                {t.status === "rejected" && "مرفوض"}
+                              </span>
+                              <span className="text-cyan-400 font-bold">{t.menuTitle}</span>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -1483,480 +1620,177 @@ export default function App() {
               </motion.div>
             )}
 
-            {/* TAB 3: SUBSCRIPTION PLANS MENUS LIST */}
-            {activeTab === "menus" && (
-              <motion.div
-                key="menus"
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.25 }}
-                className="space-y-6"
-              >
-                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
-                  <div>
-                    <h1 className="text-xl md:text-2xl font-extrabold text-white font-sans">باقات الاشتراكات وعروض التليجرام 💳</h1>
-                    <p className="text-xs text-slate-400 mt-1">
-                      قم بتهيئة وتعديل الأزرار التي تظهر لعملائك بالبوت، والمحتوى التفصيلي الخاص بالدفع التكميلي لكل باقة.
-                    </p>
-                  </div>
-                  
-                  <button
-                    onClick={() => {
-                      setEditingMenu({ id: "", title: "", price: "", description: "", details: "" });
-                      setIsEditingExistingMenu(false);
-                      setShowMenuModal(true);
-                    }}
-                    className="px-4 py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-xl text-xs transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-cyan-500/10"
-                  >
-                    <Plus className="h-4.5 w-4.5" />
-                    اضافة باقة اشتراك جديدة
-                  </button>
-                </div>
-
-                {/* Conflict and database behavior warning for maximum clarity and support */}
-                <div className="bg-amber-500/10 border border-amber-500/20 rounded-2xl p-5 text-right space-y-3">
-                  <div className="flex items-center justify-end gap-2 text-amber-400">
-                    <span className="font-bold text-sm md:text-base font-sans">توضيح وحل نهائي لتداخل الردود واختلاف الأسعار (مثال: ظهور 30 ج بدلاً من 40 ج)</span>
-                    <span className="text-lg">⚠️</span>
-                  </div>
-                  <p className="text-xs text-slate-300 leading-relaxed">
-                    إذا قمت بتعديل سعر الباقة أو تفاصيلها من هذه اللوحة (أو لوحة أخرى) ووجدت أن البوت على تيليجرام لا يزال يرسل السعر القديم (مثل <b>30 جنيهاً</b> بدلاً من <b>40 جنيهاً</b>)، فإن السبب يعود إلى الآتي:
-                  </p>
-                  <ul className="text-xs text-slate-400 space-y-2 list-disc list-inside pr-4">
-                    <li>
-                      <b className="text-amber-400">تعدد خوادم التشغيل (تعارض الحالات):</b> لديك سيرفر آخر مستضاف بنشاط على موقع <b>Railway</b> (مثل <code className="bg-slate-950 px-1 py-0.5 rounded text-slate-300">af.up.railway.app</code> الموضح في صورتك) يعمل <b>بنفس توكن البوت</b> في نفس الوقت. هذا السيرفر يستحوذ على الرسائل من تيليجرام ويرسل الردود من قاعدة بياناته القديمة وغير المحدثة.
-                    </li>
-                    <li>
-                      <b className="text-amber-400">طبيعة قاعدة البيانات المحلية:</b> نظراً لعدم توفر صلاحيات Firestore التلقائية على المنظومة في الوقت الحالي، فإن لوحة التحكم هذه واللوحة الأخرى تعملان بنمط الحفظ المحلي (<code className="bg-slate-950 px-1 py-0.5 rounded text-slate-300">local-db.json</code>). عند إعادة تشغيل السيرفر أو بناء نسخة جديدة على Railway، تعود الأزرار للأسعار الافتراضية القديمة.
-                    </li>
-                  </ul>
-                  <div className="pt-2 text-xs font-bold text-cyan-400 flex items-center justify-end gap-2">
-                    <span>💡 الحل؟ قم بإيقاف خادم التليجرام على Railway لتفادي تعارض استقبال الردود، واعتمد كلياً على التطبيق والخادم المحدث هنا.</span>
-                  </div>
-                </div>
-
-                {/* Visual success/error notifications for actions on menus */}
-                <AnimatePresence>
-                  {menuActionStatus !== "idle" && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0 }}
-                      className={`p-4 rounded-xl text-xs text-center border font-semibold flex items-center justify-center gap-2 ${
-                        menuActionStatus === "success"
-                          ? "bg-emerald-500/15 border-emerald-500/25 text-emerald-400"
-                          : "bg-red-500/15 border-red-500/25 text-red-400"
-                      }`}
-                    >
-                      <span>{menuActionMessage}</span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                {/* Grid of existing items */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                  {menus.map((menu) => (
-                    <div 
-                      key={menu.id} 
-                      className="bg-slate-900 border border-white/5 rounded-2xl p-5 flex flex-col justify-between gap-5 relative overflow-hidden"
-                    >
-                      <div className="space-y-3">
-                        <div className="flex items-start justify-between">
-                          <h3 className="font-bold text-white text-base">{menu.title}</h3>
-                          <span className="px-2.5 py-1 bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 rounded-xl text-xs font-mono font-bold">
-                            {menu.price}
-                          </span>
-                        </div>
-                        <p className="text-xs text-slate-400 leading-relaxed font-sans mt-1">
-                          {menu.description || "بدون وصف تمهيدي"}
-                        </p>
-                        <hr className="border-white/5 my-2" />
-                        <div className="space-y-2">
-                          <span className="text-[10px] text-slate-500 uppercase tracking-wider block font-bold">رسالة تفاصيل الشراء (تليجرام) 🩺</span>
-                          <p className="text-[11px] text-slate-300 leading-relaxed font-mono truncate max-h-[80px]" style={{ whiteSpace: "pre-wrap" }}>
-                            {menu.details}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex gap-2.5 pt-4 border-t border-white/5">
-                        <button
-                          onClick={() => {
-                            setEditingMenu(menu);
-                            setIsEditingExistingMenu(true);
-                            setShowMenuModal(true);
-                          }}
-                          className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-750 text-slate-200 hover:text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer border border-white/5"
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                          تعديل الباقة
-                        </button>
-                        
-                        <button
-                          onClick={() => handleDeleteMenu(menu.id)}
-                          className="p-2.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-xl text-xs transition-all cursor-pointer border border-red-500/10"
-                        >
-                          <Trash2 className="h-4.5 w-4.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* MODAL EDITOR */}
-                {showMenuModal && editingMenu && (
-                  <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                    <motion.div 
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      className="bg-slate-900 border border-white/5 p-6 rounded-2xl shadow-2xl w-full max-w-lg space-y-5"
-                    >
-                      <div className="flex justify-between items-center pb-3 border-b border-white/5">
-                        <h3 className="font-bold text-white text-base">
-                          {editingMenu.id ? "تعديل باقة الاشتراك" : "إضافة باقة اشتراك جديدة للبوت"}
-                        </h3>
-                        <button 
-                          onClick={() => {
-                            setShowMenuModal(false);
-                            setEditingMenu(null);
-                          }}
-                          className="p-1 hover:bg-slate-850 rounded-lg text-slate-400 hover:text-white"
-                        >
-                          <X className="h-5 w-5" />
-                        </button>
-                      </div>
-
-                      <form onSubmit={handleSaveMenu} className="space-y-4 text-right">
-                        <div>
-                          <label className="text-xs text-slate-400 block mb-1">رمز الباقة (ممنوع المسافات أو الرموز - مثلاً: mid_rrs) *</label>
-                          <input
-                            type="text"
-                            required
-                            disabled={isEditingExistingMenu}
-                            value={editingMenu.id || ""}
-                            onChange={(e) => setEditingMenu({ ...editingMenu, id: e.target.value })}
-                            className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 placeholder-slate-600 font-mono disabled:opacity-50"
-                            placeholder="mid_rrs"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-xs text-slate-400 block mb-1">اسم الباقة (سيظهر كزر على شات البوت - مثلاً: mid RRS) *</label>
-                          <input
-                            type="text"
-                            required
-                            value={editingMenu.title || ""}
-                            onChange={(e) => setEditingMenu({ ...editingMenu, title: e.target.value })}
-                            className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 placeholder-slate-600"
-                            placeholder="mid RRS"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-xs text-slate-400 block mb-1">سعر الباقة الإجمالي لكتابة التفاصيل (مثلاً: 300 جنيه)</label>
-                          <input
-                            type="text"
-                            value={editingMenu.price || ""}
-                            onChange={(e) => setEditingMenu({ ...editingMenu, price: e.target.value })}
-                            className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200"
-                            placeholder="300 جنيه"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-xs text-slate-400 block mb-1">وصف تمهيدي مصغر (لإظهاره داخلياً باللوحة)</label>
-                          <input
-                            type="text"
-                            value={editingMenu.description || ""}
-                            onChange={(e) => setEditingMenu({ ...editingMenu, description: e.target.value })}
-                            className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200"
-                            placeholder="وصف الباقة لتفعيل مراجعة RRS"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="text-xs text-slate-400 block mb-1">
-                            التفاصيل الكاملة ورسالة الشراء المقترنة للبوت (تظهر للمشترك على تليجرام عند الضغط على الباقة) *
-                          </label>
-                          <div className="flex flex-col">
-                            {renderFormatToolbar(
-                              "menu-details-textarea",
-                              editingMenu.details || "",
-                              (val) => setEditingMenu({ ...editingMenu, details: val }),
-                              insertFormatForMenuDetails
-                            )}
-                            <textarea
-                              id="menu-details-textarea"
-                              rows={5}
-                              required
-                              value={editingMenu.details || ""}
-                              onChange={(e) => setEditingMenu({ ...editingMenu, details: e.target.value })}
-                              className="w-full bg-slate-950 border border-white/5 rounded-b-xl p-4 text-xs text-slate-200 font-sans rounded-t-none border-t-0 focus:outline-none focus:border-cyan-500/20"
-                              placeholder="يرجى تحويل مبلغ الاشتراك إلى فودافون كاش على الرقم (010x) ثم كتابة إيميلك المسجل بالمنصة وإرساله..."
-                            />
-                          </div>
-                        </div>
-
-                        <div className="flex gap-3 pt-3 border-t border-white/5">
-                          <button
-                            type="submit"
-                            className="flex-1 py-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold rounded-xl text-xs cursor-pointer"
-                          >
-                            حفظ الباقة والتحديث
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setShowMenuModal(false);
-                              setEditingMenu(null);
-                            }}
-                            className="px-5 py-3 bg-slate-800 hover:bg-slate-750 text-slate-400 hover:text-white rounded-xl text-xs font-bold"
-                          >
-                            إلغاء
-                          </button>
-                        </div>
-                      </form>
-                    </motion.div>
-                  </div>
-                )}
-
-              </motion.div>
-            )}
-
-            {/* TAB 3.5: SUPPORT MESSAGES GROUP (تحدث مع الدعم) */}
+            {/* TAB 4: SUPPORT MESSAGES CHAT */}
             {activeTab === "support" && (
               <motion.div
                 key="support"
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.25 }}
-                className="space-y-6"
+                transition={{ duration: 0.2 }}
+                className="space-y-6 text-right"
               >
-                <div>
-                  <h1 className="text-xl md:text-2xl font-extrabold text-white font-sans">رسائل المستخدمين والدعم الفني 💬</h1>
-                  <p className="text-xs text-slate-400 mt-1">
-                    هنا تجد جميع الرسائل الواردة من مستخدمي البوت عند اختيارهم "تحدث مع الدعم"، ويمكنك الرد عليهم مباشرة وسيصلهم الرد على التليجرام فوراً.
-                  </p>
-                </div>
-
-                {/* Filters */}
-                <div className="flex flex-wrap items-center justify-between gap-4 bg-slate-900/40 p-4 border border-white/5 rounded-2xl">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setStatusFilter("all")}
-                      className={`px-4 py-2 text-xs rounded-xl transition-all cursor-pointer ${
-                        statusFilter === "all"
-                          ? "bg-cyan-500 text-slate-950 font-bold"
-                          : "bg-slate-950 text-slate-400 hover:text-white border border-white/5"
-                      }`}
-                    >
-                      الكل ({supportMessages.length})
-                    </button>
-                    <button
-                      onClick={() => setStatusFilter("pending")}
-                      className={`px-4 py-2 text-xs rounded-xl transition-all cursor-pointer ${
-                        statusFilter === "pending"
-                          ? "bg-red-500 text-white font-bold"
-                          : "bg-slate-950 text-slate-400 hover:text-white border border-white/5"
-                      }`}
-                    >
-                      بانتظار الرد ({supportMessages.filter(m => !m.replied).length})
-                    </button>
-                    <button
-                      onClick={() => setStatusFilter("replied")}
-                      className={`px-4 py-2 text-xs rounded-xl transition-all cursor-pointer ${
-                        statusFilter === "replied"
-                          ? "bg-emerald-500 text-slate-950 font-bold"
-                          : "bg-slate-950 text-slate-400 hover:text-white border border-white/5"
-                      }`}
-                    >
-                      تم الرد عليها ({supportMessages.filter(m => m.replied).length})
-                    </button>
-                  </div>
-
-                  <input
-                    type="text"
-                    placeholder="ابحث عن رسالة أو مستخدم..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="bg-slate-950/60 border border-white/5 text-xs text-slate-200 px-4 py-2.5 rounded-xl focus:outline-none focus:border-cyan-500/50 w-full sm:w-64 text-right animate-all"
-                  />
-                </div>
-
-                {/* Main section support messages */}
-                <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
                   
-                  {/* Left list panel */}
-                  <div className="xl:col-span-2 space-y-4 max-h-[600px] overflow-y-auto pr-1">
-                    {(() => {
-                      const filtered = supportMessages.filter(msg => {
-                        // filter by status
-                        if (statusFilter === "pending" && msg.replied) return false;
-                        if (statusFilter === "replied" && !msg.replied) return false;
-                        
-                        // filter by search
-                        if (searchQuery.trim()) {
-                          const q = searchQuery.toLowerCase();
-                          const matchesName = msg.telegramName?.toLowerCase().includes(q);
-                          const matchesUsername = msg.telegramUsername?.toLowerCase().includes(q);
-                          const matchesText = msg.messageText?.toLowerCase().includes(q);
-                          return matchesName || matchesUsername || matchesText;
-                        }
-                        return true;
-                      });
+                  {/* Left panel: Selected message conversation reply */}
+                  <div className="lg:col-span-7 bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-6">
+                    {selectedSupportMessage ? (
+                      <motion.div 
+                        key={selectedSupportMessage.id}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className="space-y-6"
+                      >
+                        <div className="flex items-center justify-between border-b border-white/5 pb-4">
+                          <button
+                            onClick={() => handleDeleteSupportMessage(selectedSupportMessage.id)}
+                            className="p-2 text-slate-500 hover:text-red-400 transition-colors"
+                            title="حذف الرسالة"
+                          >
+                            <Trash2 className="h-4.5 w-4.5" />
+                          </button>
 
-                      if (filtered.length === 0) {
-                        return (
-                          <div className="bg-slate-900 border border-white/5 rounded-2xl p-12 text-center text-slate-400 space-y-3">
-                            <MessageSquare className="h-12 w-12 text-slate-600 mx-auto opacity-40 animate-pulse" />
-                            <h3 className="font-bold text-white text-sm">لا يوجد رسائل دعم مطابقة</h3>
-                            <p className="text-xs max-w-xs mx-auto leading-relaxed">
-                              عند ورود رسالة فنية جديدة أو بمجرد بدء العملاء المحادثة مع الدعم ستظهر السجلات هنا.
-                            </p>
-                          </div>
-                        );
-                      }
-
-                      return filtered.map((msg) => (
-                        <div
-                          key={msg.id}
-                          onClick={() => {
-                            setSelectedSupportMessage(msg);
-                            setSupportReplyText("");
-                          }}
-                          className={`p-5 rounded-2xl border transition-all cursor-pointer text-right space-y-3.5 relative ${
-                            selectedSupportMessage?.id === msg.id
-                              ? "bg-slate-850/85 border-cyan-500/40 shadow-lg shadow-cyan-500/5 text-right"
-                              : "bg-slate-900/60 border-white/5 hover:border-white/10 hover:bg-slate-850/30"
-                          }`}
-                        >
-                          <div className="flex justify-between items-center">
-                            <div className="flex items-center gap-1.5">
-                              {msg.replied ? (
-                                <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-500/15 text-emerald-400">
-                                  تم الرد عليها ✅
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-red-500/10 text-red-400 animate-pulse">
-                                  قيد الانتظار ⏳
-                                </span>
+                          <div className="text-right">
+                            <h3 className="font-extrabold text-white text-base">{selectedSupportMessage.telegramName}</h3>
+                            <div className="flex items-center gap-1.5 justify-end text-xs text-slate-500 mt-1">
+                              {selectedSupportMessage.telegramUsername && (
+                                <a 
+                                  href={`https://t.me/${selectedSupportMessage.telegramUsername}`} 
+                                  target="_blank" 
+                                  rel="noreferrer" 
+                                  className="text-cyan-400 font-bold hover:underline"
+                                >
+                                  @{selectedSupportMessage.telegramUsername}
+                                </a>
                               )}
-                            </div>
-                            
-                            <div className="flex items-center gap-2.5">
-                              <div className="text-right">
-                                <h4 className="font-bold text-white text-xs">{msg.telegramName}</h4>
-                                <span className="text-[10px] text-slate-500 font-mono">@{msg.telegramUsername || "no_user"}</span>
-                              </div>
-                              <div className="h-9 w-9 rounded-xl bg-slate-950 flex items-center justify-center text-xs font-black text-cyan-400 border border-white/5">
-                                {msg.telegramName?.charAt(0) || "U"}
-                              </div>
+                              <span>•</span>
+                              <span className="font-mono">{new Date(selectedSupportMessage.createdAt).toLocaleString("ar-EG")}</span>
                             </div>
                           </div>
+                        </div>
 
-                          <div className="bg-slate-950 p-3.5 border border-white/5 rounded-xl text-right">
-                            <p className="text-xs text-slate-350 leading-relaxed font-sans whitespace-pre-line select-text">{msg.messageText}</p>
-                            {msg.messagePhotoUrl && (
-                               <div className="mt-2">
-                                  <img src={msg.messagePhotoUrl} alt="Sub support screenshot" className="w-full max-w-sm rounded-[6px] border border-white/5 object-contain" />
-                               </div>
-                            )}
+                        {/* Customer incoming text card */}
+                        <div className="space-y-2 text-right">
+                          <span className="text-[10px] text-slate-500 block">رسالة الاستفسار من العميل:</span>
+                          <div className="p-4 bg-slate-950 border border-white/5 rounded-2xl text-xs text-slate-200 leading-relaxed font-semibold">
+                            {selectedSupportMessage.messageText}
                           </div>
-
-                          {msg.replied && msg.replyText && (
-                            <div className="bg-slate-850/40 p-3 border-r-2 border-emerald-500 rounded-l-xl text-xs space-y-1 text-right">
-                              <p className="text-[10px] text-slate-500 font-bold">رد الإدارة:</p>
-                              <p className="text-slate-350 leading-relaxed select-text">{msg.replyText}</p>
+                          {selectedSupportMessage.messagePhotoUrl && (
+                            <div className="bg-slate-950 border border-white/5 rounded-2xl overflow-hidden p-2 flex items-center justify-center max-h-[250px]">
+                              <img 
+                                src={selectedSupportMessage.messagePhotoUrl} 
+                                alt="Support message attachment" 
+                                className="max-h-[240px] rounded-lg object-contain"
+                              />
                             </div>
                           )}
-
-                          <div className="flex justify-between items-center pt-2 text-[10px] text-slate-500">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteSupportMessage(msg.id);
-                              }}
-                              className="text-red-400/80 hover:text-red-450 cursor-pointer flex items-center gap-1 transition-all"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              حذف السجل
-                            </button>
-                            <span className="font-mono">
-                              {new Date(msg.createdAt).toLocaleString("ar-EG")}
-                            </span>
-                          </div>
-                        </div>
-                      ));
-                    })()}
-                  </div>
-
-                  {/* Right Reply details panel */}
-                  <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-6 text-right">
-                    <h3 className="text-sm font-bold text-white border-b border-white/5 pb-3">إجراء الرد والتواصل ⚙️</h3>
-                    
-                    {selectedSupportMessage ? (
-                      <form onSubmit={handleReplySupport} className="space-y-4 text-right">
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase tracking-widest block font-bold mb-1">المستقبل</span>
-                          <p className="text-xs font-bold text-white">{selectedSupportMessage.telegramName}</p>
-                          <p className="text-[10px] font-mono text-cyan-400">@{selectedSupportMessage.telegramUsername || "no_username"}</p>
                         </div>
 
-                        <div>
-                          <span className="text-[10px] text-slate-500 uppercase tracking-widest block font-bold mb-1">رسالته الأخيرة</span>
-                          <div className="p-3 bg-slate-950 border border-white/5 rounded-xl text-xs text-slate-350 leading-relaxed font-sans max-h-[220px] overflow-y-auto select-text">
-                            <p>{selectedSupportMessage.messageText}</p>
-                            {selectedSupportMessage.messagePhotoUrl && (
-                                <img src={selectedSupportMessage.messagePhotoUrl} alt="Message Attachment" className="mt-2 w-full max-w-full rounded border border-white/5 object-contain max-h-32" />
+                        {/* Display reply details if already replied */}
+                        {selectedSupportMessage.replied && (
+                          <div className="p-4 bg-emerald-500/5 border-r-2 border-emerald-500 rounded-2xl space-y-1.5 text-xs text-right">
+                            <span className="text-emerald-400 font-bold block">تم الرد بواسطة الإدارة:</span>
+                            <p className="text-slate-300 leading-relaxed font-mono">{selectedSupportMessage.replyText}</p>
+                            {selectedSupportMessage.repliedAt && (
+                              <span className="text-[10px] text-slate-500 font-mono block">
+                                في {new Date(selectedSupportMessage.repliedAt).toLocaleString("ar-EG")}
+                              </span>
                             )}
                           </div>
-                        </div>
+                        )}
 
-                        <div className="space-y-1 pb-2">
-                          <label className="text-xs text-slate-400 block font-bold">رسالة الرد الخاص بك *</label>
+                        {/* Direct Reply Form controls */}
+                        <form onSubmit={handleReplySupport} className="space-y-4 pt-4 border-t border-white/5">
+                          <label className="text-xs text-slate-400 font-bold block">توجيه الرد السريع للتليجرام:</label>
                           <div className="space-y-0">
                             {renderFormatToolbar("support-reply-textarea", supportReplyText, setSupportReplyText)}
                             <textarea
                               id="support-reply-textarea"
-                              rows={4}
-                              required
-                              placeholder="اكتب رد الدعم الفني لدكتور ميدكيت وسيصل له مباشرة على حسابه الشخصي في تليجرام..."
                               value={supportReplyText}
                               onChange={(e) => setSupportReplyText(e.target.value)}
-                              className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-3.5 text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50 text-right font-sans"
+                              placeholder="اكتب ردك الوافي هنا لحل مشكلة العميل وإرسالها لتليجرام..."
+                              rows={4}
+                              className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-4 text-xs text-slate-200 focus:outline-none"
+                              required
                             />
                           </div>
-                        </div>
 
-                        <button
-                          type="submit"
-                          disabled={submittingSupportReply}
-                          className="w-full py-3.5 bg-gradient-to-l from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg hover:shadow-cyan-500/10"
-                        >
-                          {submittingSupportReply ? "جاري تسليم الرد..." : "إرسال الرد عبر البوت 🚀"}
-                        </button>
+                          <button
+                            type="submit"
+                            disabled={submittingSupportReply}
+                            className="w-full py-3 bg-gradient-to-l from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-black rounded-xl text-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                          >
+                            <Send className="h-4 w-4" />
+                            إرسال الرد المباشر لتليجرام
+                          </button>
 
-                        <AnimatePresence>
-                          {supportReplySuccess && (
-                            <motion.p
-                              initial={{ opacity: 0, y: 5 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              className="text-[11px] text-emerald-400 font-bold text-center mt-2 animate-pulse"
-                            >
-                              تم تسليم الرد على التليجرام للمشترك وتأكيده!
-                            </motion.p>
-                          )}
-                        </AnimatePresence>
-                      </form>
+                          <AnimatePresence>
+                            {supportReplySuccess && (
+                              <motion.div 
+                                initial={{ opacity: 0, y: 5 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0 }}
+                                className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs text-center flex items-center justify-center gap-2"
+                              >
+                                <Check className="h-4 w-4" />
+                                تم إرسال رد الدعم وتوصيله للعميل بنجاح!
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </form>
+                      </motion.div>
                     ) : (
-                      <div className="py-12 text-center text-slate-500 space-y-2">
-                        <MessageSquare className="h-10 w-10 text-slate-800 mx-auto opacity-30 animate-bounce" />
-                        <h4 className="text-xs font-bold text-white">لم يتم تحديد رسالة</h4>
-                        <p className="text-[11px] leading-relaxed max-w-[180px] mx-auto text-slate-500">
-                          اختر رسالة مستخدم من قائمة السجلات للبدء في كتابة رد مخصص يتم ترحيله للتليجرام.
+                      <div className="bg-slate-900 border border-white/5 rounded-2xl p-12 text-center text-slate-500 space-y-4 flex flex-col items-center justify-center min-h-[350px]">
+                        <div className="h-14 w-14 bg-slate-950 border border-white/5 rounded-full flex items-center justify-center">
+                          <MessageSquare className="h-6 w-6 text-slate-700 animate-pulse" />
+                        </div>
+                        <h3 className="text-white font-bold text-sm">محادثات الدعم الفني</h3>
+                        <p className="text-xs leading-relaxed max-w-sm">
+                          اختر أي رسالة دعم فني أو استفسار عميل من القائمة الموجودة على اليسار للرد المباشر وتوفير الدعم.
                         </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right panel: Messages checklist */}
+                  <div className="lg:col-span-5 bg-slate-900 border border-white/5 rounded-2xl p-4 space-y-3.5">
+                    <h3 className="text-sm font-black text-white px-2">رسائل العملاء</h3>
+                    
+                    {supportMessages.length === 0 ? (
+                      <p className="text-xs text-slate-500 text-center py-12">لا توجد رسائل دعم فني متوفرة حالياً.</p>
+                    ) : (
+                      <div className="space-y-2 max-h-[550px] overflow-y-auto pr-1">
+                        {supportMessages.map((msg) => (
+                          <div
+                            key={msg.id}
+                            onClick={() => {
+                              setSelectedSupportMessage(msg);
+                              setSupportReplyText("");
+                            }}
+                            className={`p-3.5 rounded-xl border transition-all cursor-pointer text-right space-y-1.5 ${
+                              selectedSupportMessage?.id === msg.id
+                                ? "bg-cyan-500/10 border-cyan-500/30 text-white"
+                                : "bg-slate-950/60 border-white/5 hover:border-white/10 text-slate-300"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-[8px] text-slate-500 font-mono">
+                                {new Date(msg.createdAt).toLocaleDateString("ar-EG")}
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                {msg.replied ? (
+                                  <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 rounded text-[8px] font-bold">تم الرد</span>
+                                ) : (
+                                  <span className="px-1.5 py-0.5 bg-cyan-500/10 text-cyan-400 rounded text-[8px] font-bold animate-pulse">جديدة</span>
+                                )}
+                                <p className="font-extrabold text-xs">{msg.telegramName}</p>
+                              </div>
+                            </div>
+                            <p className="text-[11px] text-slate-400 truncate leading-relaxed text-right pr-2">
+                              {msg.messageText}
+                            </p>
+                          </div>
+                        ))}
                       </div>
                     )}
                   </div>
@@ -1965,300 +1799,372 @@ export default function App() {
               </motion.div>
             )}
 
-            {/* TAB 4: WEBHOOK & TELEGRAM TOKEN SETTINGS */}
+            {/* TAB 5: SETTINGS & CLOUD SYNC */}
             {activeTab === "settings" && (
               <motion.div
                 key="settings"
                 initial={{ opacity: 0, y: 15 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.25 }}
-                className="space-y-8 animate-all"
+                transition={{ duration: 0.2 }}
+                className="space-y-6 text-right"
               >
-                <div>
-                  <h1 className="text-xl md:text-2xl font-extrabold text-white">إعدادات توكن تليجرام والويب هوك ⚙️</h1>
-                  <p className="text-xs text-slate-400 mt-1">
-                    قم بربط البوت الخاص بك لمنصة ميدكيت ليتم تفعيله وتشغيله مجاناً 24 ساعة بدون انقطاع وبدون اتصال حاسوبك بالإنترنت.
+                
+                {/* 1. Railway Database Sync Card (Main requirement for safe storage and push/pull) */}
+                <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
+                  <div className="flex items-center gap-2 justify-end border-b border-white/5 pb-4">
+                    <h3 className="text-base font-black text-white flex items-center gap-1.5 justify-end">
+                      مزامنة قاعدة البيانات السحابية (Railway ↔️ Local) 🔁
+                      <Database className="h-5 w-5 text-cyan-400" />
+                    </h3>
+                  </div>
+
+                  <p className="text-xs text-slate-400 leading-relaxed max-w-4xl">
+                    هذا القسم يسمح لك بالحفاظ على باقات الاشتراك والطلبات والعملاء دون أن تضيع أو تختفي. عند إضافة باقات جديدة أو حذف الطلبات والرسائل، يمكنك الضغط على <strong>دفع البيانات (Push)</strong> لرفعها وحفظها نهائياً على سيرفر Railway السحابي. وعند تحديث سيرفر السحاب، اضغط على <strong>سحب البيانات (Pull)</strong> لتنزيل كافة البيانات الحديثة لجهازك.
                   </p>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                    <div className="space-y-1.5 text-right">
+                      <label className="text-xs text-slate-400 font-bold block mr-1">رابط سيرفر Railway السحابي:</label>
+                      <input
+                        type="text"
+                        placeholder="مثال: https://my-app.railway.app"
+                        value={railwayUrl}
+                        onChange={(e) => setRailwayUrl(e.target.value)}
+                        className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 font-mono text-left focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5 text-right">
+                      <label className="text-xs text-slate-400 font-bold block mr-1">توكن البوت أو كلمة مرور اللوحة للمصادقة:</label>
+                      <input
+                        type="password"
+                        placeholder="أدخل توكن البوت أو كلمة سر اللوحة"
+                        value={syncToken}
+                        onChange={(e) => setSyncToken(e.target.value)}
+                        className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 font-mono text-left focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Sync buttons container */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3">
+                    <button
+                      type="button"
+                      onClick={handleSyncPull}
+                      disabled={syncStatus === "loading"}
+                      className="py-3.5 bg-slate-950 hover:bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:border-cyan-500/40 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      <ArrowDownCircle className="h-4.5 w-4.5" />
+                      سحب وتنزيل كافة البيانات السحابية (Pull)
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleSyncPush}
+                      disabled={syncStatus === "loading"}
+                      className="py-3.5 bg-gradient-to-l from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-xl text-xs font-black transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 shadow-md hover:shadow-cyan-500/10"
+                    >
+                      <ArrowUpCircle className="h-4.5 w-4.5" />
+                      رفع وتثبيت البيانات المحلية على السحاب (Push)
+                    </button>
+                  </div>
+
+                  <AnimatePresence>
+                    {syncStatus !== "idle" && (
+                      <motion.div
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0 }}
+                        className={`p-3.5 rounded-xl border text-xs text-right leading-relaxed font-semibold ${
+                          syncStatus === "loading"
+                            ? "bg-cyan-500/5 border-cyan-500/10 text-cyan-400 animate-pulse"
+                            : syncStatus === "success"
+                              ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                              : "bg-red-500/10 border-red-500/20 text-red-400"
+                        }`}
+                      >
+                        {syncMessage}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-                  
-                  {/* Token Configuration Form */}
-                  <div className="lg:col-span-2 bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-6">
-                    <h3 className="text-base font-bold text-white border-b border-white/5 pb-3">إعداد رموز الأمان وتليجرام</h3>
-                    
-                    <form onSubmit={saveGlobalSettings} className="space-y-5 text-right">
-                      
-                      <div className="space-y-1">
-                        <label className="text-xs text-slate-400 block font-bold">توكن بوت التليجرام (Telegram Bot Token) *</label>
-                        <input
-                          type="password"
-                          required
-                          value={tokenInput}
-                          onChange={(e) => setTokenInput(e.target.value)}
-                          placeholder="مثال: 568935711335:AAH3m..."
-                          className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 placeholder-slate-600 font-mono text-left focus:outline-none focus:border-cyan-500/50"
-                        />
-                        <span className="text-[10px] text-slate-500 leading-relaxed block mt-1">
-                          توكن مأخوذ من حساب BotFather لتسمية وتلقين البوت.
-                        </span>
-                      </div>
+                {/* 2. Global Bot Settings Form */}
+                <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-6">
+                  <div className="flex items-center justify-between border-b border-white/5 pb-4 flex-row-reverse">
+                    <h3 className="text-base font-black text-white">إعدادات البوت والتحكم تليجرام</h3>
+                    <Bot className="h-5 w-5 text-cyan-400" />
+                  </div>
 
-                      <div className="space-y-1">
-                        <label className="text-xs text-slate-400 block font-bold">معرف الشات الإداري (Admin Chat ID)</label>
-                        <input
-                          type="text"
-                          value={adminChatIdInput}
-                          onChange={(e) => setAdminChatIdInput(e.target.value)}
-                          placeholder="مثال: 12345678"
-                          className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 font-mono text-left focus:outline-none focus:border-cyan-500/50"
-                        />
-                        <span className="text-[10px] text-slate-500 leading-relaxed block mt-1">
-                          قم بوضعه لتصلك تنبيهات طلبات المشتركين الجدد وإيصالاتهم على حسابك التليجرام الخاص بك على الفور! يمكنك وضع أكثر من معرف مفصولاً بفاصلة أو مسافة لتعيين عدة مشرفين (مثال: 1234567, 8765432) لتصلهم جميعاً الإشعارات والطلبات وسيرسل للباقي موافقة/رد المشرف الآخر.
-                        </span>
-                      </div>
-
-                      <div className="space-y-1">
-                        <label className="text-xs text-slate-400 block font-bold">رسالة الترحيب التلقائية بالبوت (/start)</label>
-                        <div className="space-y-0">
-                          {renderFormatToolbar("welcome-msg-textarea", welcomeMsgInput, setWelcomeMsgInput)}
-                          <textarea
-                            id="welcome-msg-textarea"
-                            rows={4}
-                            value={welcomeMsgInput}
-                            onChange={(e) => setWelcomeMsgInput(e.target.value)}
-                            placeholder="اكتب الترحيب للمشترك..."
-                            className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-4 text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-cyan-500/50 font-sans"
+                  <form onSubmit={saveGlobalSettings} className="space-y-5 text-right">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-bold text-slate-400 block mr-1">توكن البوت (Telegram Bot Token):</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            placeholder="مثال: 123456789:ABCdefGhIJKlmNoPQRsT"
+                            value={tokenInput}
+                            onChange={(e) => setTokenInput(e.target.value)}
+                            className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 font-mono text-left focus:outline-none"
+                            required
                           />
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-4 pt-3 border-t border-white/5">
-                        <button
-                          type="submit"
-                          disabled={savingSettings}
-                          className="px-6 py-3.5 bg-cyan-500 hover:bg-cyan-400 text-slate-950 disabled:opacity-50 font-bold rounded-xl text-xs transition-all cursor-pointer shadow-lg hover:shadow-cyan-500/10"
-                        >
-                          {savingSettings ? "جاري الحفظ..." : "حفظ وحماية الإعدادات"}
-                        </button>
-
-                        <AnimatePresence>
-                          {saveSuccess && (
-                            <motion.span 
-                              initial={{ opacity: 0 }}
-                              animate={{ opacity: 1 }}
-                              exit={{ opacity: 0 }}
-                              className="text-xs text-emerald-400 font-semibold"
-                            >
-                              تم حفظ إعدادات الرموز بنجاح!
-                            </motion.span>
-                          )}
-                        </AnimatePresence>
-                      </div>
-
-                    </form>
-                  </div>
-
-                  {/* Webhook Connectivity Panel & Tutorial instructions */}
-                  <div className="space-y-6">
-                    
-                    {/* Local Preview Control */}
-                    <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
-                      <h3 className="text-sm font-bold text-white uppercase tracking-wider flex items-center justify-between">
-                        التحكم في المعاينة والمزامنة 🔍
-                        <span className="text-[10px] text-slate-400 font-normal bg-white/5 px-2 py-0.5 rounded-lg">ID: {webhookStatus?.instanceId}</span>
-                      </h3>
-                      
-                      <div className="p-4 bg-slate-950 border border-white/5 rounded-xl space-y-4 text-right">
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between flex-row-reverse">
-                            <span className="text-slate-300 font-bold text-[11px]">حالة استجابة المعاينة:</span>
-                            <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${webhookStatus?.isPollingActive ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
-                              {webhookStatus?.isPollingActive ? "Active" : "Stopped"}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between flex-row-reverse">
-                            <span className="text-slate-300 font-bold text-[11px]">المنصب الحالي:</span>
-                            <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${webhookStatus?.masterInstanceId === webhookStatus?.instanceId ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/20" : "bg-slate-800 text-slate-400"}`}>
-                              {webhookStatus?.masterInstanceId === webhookStatus?.instanceId ? "MASTER" : "SLAVE"}
-                            </span>
-                          </div>
-                        </div>
-
-                        <p className="text-[10px] text-slate-500 leading-relaxed border-t border-white/5 pt-3">
-                          لربط المعاينة (Local) بالنسخة المنشورة ومنع تكرار الرسائل، اجعل إحدى النسخ فقط هي الـ "Master".
-                          النسخة المنشورة (ais-pre) هي النسخة الرسمية للمحتوى.
-                        </p>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleTogglePolling(webhookStatus?.devPollingEnabled === false)}
-                            className={`py-2.5 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
-                              webhookStatus?.devPollingEnabled !== false 
-                                ? "bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/15" 
-                                : "bg-slate-800 text-slate-300 hover:bg-slate-700"
-                            }`}
-                          >
-                            {webhookStatus?.devPollingEnabled !== false ? "إيقاف الاستجابة ⛔" : "تشغيل الاستجابة ▶️"}
-                          </button>
-                          
-                          <button
-                            type="button"
-                            onClick={() => handleTogglePolling(true, true)}
-                            className={`py-2.5 rounded-xl text-[10px] font-bold transition-all cursor-pointer ${
-                              webhookStatus?.masterInstanceId === webhookStatus?.instanceId 
-                                ? "bg-emerald-500/10 text-emerald-400 cursor-default opacity-50" 
-                                : "bg-cyan-500 text-slate-950 hover:bg-cyan-400"
-                            }`}
-                            disabled={webhookStatus?.masterInstanceId === webhookStatus?.instanceId}
-                          >
-                            {webhookStatus?.masterInstanceId === webhookStatus?.instanceId ? "أنت المسيطر حالياً ✅" : "اجعله الاستجابة الوحيدة ⭐"}
-                          </button>
-                        </div>
-                        
-                        {/* Instance Registry List */}
-                        {webhookStatus?.activeInstances?.length > 1 && (
-                          <div className="mt-4 pt-4 border-t border-white/5 space-y-2">
-                            <h4 className="text-[9px] text-slate-400 font-bold uppercase">النسخ النشطة حالياً:</h4>
-                            <div className="space-y-1.5">
-                              {webhookStatus.activeInstances.map((inst: any) => (
-                                <div key={inst.id} className="flex items-center justify-between flex-row-reverse bg-white/5 px-2 py-1.5 rounded-lg">
-                                  <div className="flex items-center gap-2 flex-row-reverse">
-                                    <span className={`w-1.5 h-1.5 rounded-full ${Date.now() - inst.lastSeen < 60000 ? "bg-emerald-500" : "bg-amber-500"}`}></span>
-                                    <span className="text-[9px] text-slate-300 truncate max-w-[120px]">{inst.url || inst.id} {inst.id === webhookStatus.instanceId && "(أنت)"}</span>
-                                  </div>
-                                  <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded ${inst.id === webhookStatus.masterInstanceId ? "bg-cyan-500/20 text-cyan-400" : "bg-slate-700 text-slate-500"}`}>
-                                    {inst.id === webhookStatus.masterInstanceId ? "MASTER" : "SLAVE"}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-bold text-slate-400 block mr-1">رقم معرف مسؤول الإدارة (Admin Chat ID):</label>
+                        <input
+                          type="text"
+                          placeholder="مثال: 987654321"
+                          value={adminChatIdInput}
+                          onChange={(e) => setAdminChatIdInput(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 font-mono text-left focus:outline-none"
+                          required
+                        />
                       </div>
                     </div>
 
-                    {/* Bot Setup status */}
-                    <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
-                      <h3 className="text-sm font-bold text-white uppercase tracking-wider">حالة تشغيل 24 ساعة ⚡</h3>
-                      
-                      <div className="p-4 bg-slate-950 border border-white/5 rounded-xl space-y-4 text-xs">
-                        {webhookStatus?.configured ? (
-                          <div className="space-y-3.5 text-right">
-                            <div className="flex items-center gap-2">
-                              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                              <span className="font-bold text-emerald-400">نشط ومتصل بالخادم</span>
-                            </div>
-                            <div className="font-mono text-[10px] text-slate-400 space-y-1 text-left bg-slate-900/50 p-2 border border-white/5 rounded-lg">
-                              <div><strong>Webhook URL:</strong></div>
-                              <div className="break-all text-xs text-cyan-400 mt-0.5">{webhookStatus.webhookInfo?.url || "مؤمن بالويب هوك"}</div>
-                              <div className="mt-1"><strong>Pending updates:</strong> {webhookStatus.webhookInfo?.pending_update_count || 0}</div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="space-y-2">
-                            <div className="flex items-center gap-2">
-                              <span className="w-2.5 h-2.5 rounded-full bg-red-400"></span>
-                              <span className="font-bold text-red-300">غير متصل أو فاقد التنشيط</span>
-                            </div>
-                            <p className="text-slate-500 text-[11px] leading-relaxed">
-                              توكن الأمان غير مهيأ أو لم يتم تشغيل الويب هوك الخاص بك.
-                            </p>
-                          </div>
-                        )}
-                      </div>
-
-                      <button
-                        onClick={activateBotWebhook}
-                        className="w-full py-3.5 bg-gradient-to-l from-cyan-600 to-teal-600 hover:from-cyan-500 hover:to-teal-500 text-white font-black rounded-xl text-xs transition-shadow shadow-md hover:shadow-cyan-500/15 flex items-center justify-center gap-2 cursor-pointer"
-                      >
-                        <RefreshCw className="h-4.5 w-4.5 text-slate-100" />
-                        ربط البوت بالويب هوك وتفعيله 🔌
-                      </button>
-
-                      {webhookStatus?.configured && webhookStatus.webhookInfo?.url && (
-                        <button
-                          onClick={removeBotWebhook}
-                          className="w-full py-2 bg-slate-950 hover:bg-red-500/10 text-slate-400 hover:text-red-400 border border-white/5 hover:border-red-500/30 rounded-xl text-[11px] transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                          إيقاف الويب هوك (للعودة لوضع التطوير المحلي)
-                        </button>
-                      )}
-
-                      <AnimatePresence>
-                        {webhookSettingStatus === "success" && (
-                          <motion.p 
-                            initial={{ opacity: 0, y: 5 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className="text-xs text-emerald-400 font-semibold text-center mt-2"
-                          >
-                            تم ربط وتنشيط الويب هوك للبوت الخاص بك بجودة فائقة!
-                          </motion.p>
-                        )}
-                        {webhookSettingStatus === "error" && (
-                          <motion.p 
-                            initial={{ opacity: 0, y: 5 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className="text-xs text-red-400 font-semibold text-center mt-2"
-                          >
-                            خطأ: {webhookErrorMsg}
-                          </motion.p>
-                        )}
-                      </AnimatePresence>
-                    </div>
-
-                    {/* Accessibility/Authentication Management Account List */}
-                    <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4 text-right">
-                      <h4 className="text-sm font-bold text-white flex items-center gap-1.5 justify-end">
-                        كلمة مرور اللوحة 🔐
-                        <UserCheck className="h-4.5 w-4.5 text-cyan-400" />
-                      </h4>
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        قم بتعيين كلمة سر لدخول لوحة التحكم والوصول لكافة البيانات. أي شخص يملك كلمة السر يمكنه تسجيل الدخول.
-                      </p>
-
-                      <input
-                        type="text"
-                        placeholder="كلمة المرور للدخول (الافتراضي: admin)"
-                        value={dashboardPasswordInput}
-                        onChange={(e) => setDashboardPasswordInput(e.target.value)}
-                        className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder-slate-600 font-mono text-left focus:outline-none focus:border-cyan-500/50"
-                        dir="auto"
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-slate-400 block mr-1">رسالة الترحيب والتعليمات بالبوت للعملاء الجدد:</label>
+                      <textarea
+                        value={welcomeMsgInput}
+                        onChange={(e) => setWelcomeMsgInput(e.target.value)}
+                        placeholder="اكتب هنا رسالة التعليمات التفصيلية التي تظهر للمستخدم فور اشتغاله للبوت..."
+                        rows={4}
+                        className="w-full bg-slate-950 border border-white/5 rounded-xl p-4 text-xs text-slate-200 focus:outline-none font-sans"
+                        required
                       />
                     </div>
 
-                    {/* How to get Chat ID tutorials */}
-                    <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
-                      <h4 className="text-sm font-bold text-white flex items-center gap-1.5">
-                        <HelpCircle className="h-4.5 w-4.5 text-cyan-400" />
-                        مساعـد تليجرام السريع 🕯️
-                      </h4>
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        <strong>كيف أحصل على التوكن (Token)؟</strong>
-                        <br />
-                        ابحث في تليجرام عن الحساب المعتمد <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">@BotFather</a>، وأرسل له الأمر <code className="bg-slate-950 px-1 py-0.5 rounded border border-white/5 font-mono text-cyan-400">/newbot</code> ثم اتبع الخطوات وسيمنحك التوكن.
-                      </p>
-                      <hr className="border-white/5" />
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        <strong>كيف أحصل على معرف الشات (Chat ID) الخاص بي؟</strong>
-                        <br />
-                        ابحث عن حساب <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">@userinfobot</a> أو <a href="https://t.me/GetMyID_Bot" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">@GetMyID_Bot</a> وأرسل له أي رسالة وسيعطيك رقم المعرف الخاص بك لتقوم بوضعه هنا.
-                      </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-2">
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-bold text-slate-400 block mr-1">تغيير كلمة مرور اللوحة المسؤول 🔐:</label>
+                        <input
+                          type="text"
+                          placeholder="كلمة المرور الجديدة (الافتراضية: admin)"
+                          value={dashboardPasswordInput}
+                          onChange={(e) => setDashboardPasswordInput(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-3 text-xs text-slate-200 font-mono text-left focus:outline-none"
+                        />
+                      </div>
                     </div>
 
-                  </div>
+                    <div className="flex items-center justify-between gap-4 pt-4 border-t border-white/5">
+                      <AnimatePresence>
+                        {saveSuccess && (
+                          <motion.span
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0 }}
+                            className="text-xs text-emerald-400 font-bold"
+                          >
+                            ✓ تم حفظ كافة الإعدادات بنجاح في قاعدة البيانات المحلية!
+                          </motion.span>
+                        )}
+                      </AnimatePresence>
+
+                      <button
+                        type="submit"
+                        disabled={savingSettings}
+                        className="py-3 px-8 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black rounded-xl text-xs transition-all cursor-pointer shadow-lg shadow-cyan-500/10 disabled:opacity-50"
+                      >
+                        {savingSettings ? "جاري الحفظ..." : "حفظ الإعدادات الفورية"}
+                      </button>
+                    </div>
+
+                  </form>
                 </div>
+
+                {/* 3. Webhook detail statuses */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  
+                  {/* Webhook configurations and toggle polling */}
+                  <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
+                    <h3 className="text-sm font-black text-white">حالة الويب هوك وتطوير البوت</h3>
+                    
+                    <div className="p-4 bg-slate-950 border border-white/5 rounded-xl space-y-3.5 text-xs text-right">
+                      {webhookStatus?.configured ? (
+                        <>
+                          <div className="flex items-center gap-2 justify-end">
+                            <span className="font-bold text-emerald-400">البوت متصل بالويب هوك نشط ⚡</span>
+                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                          </div>
+                          <div className="p-3 bg-slate-900 border border-white/5 rounded-lg text-left text-[11px] text-slate-400 font-mono space-y-1">
+                            <div className="text-xs text-cyan-400 truncate">URL: {webhookStatus.webhookInfo?.url}</div>
+                            <div>Pending update count: {webhookStatus.webhookInfo?.pending_update_count || 0}</div>
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex items-center gap-2 justify-end text-amber-400 font-bold">
+                          <span>البوت مغلق الويب هوك أو وضع تطوير محلي</span>
+                          <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+                        </div>
+                      )}
+
+                      <div className="pt-2 border-t border-white/5 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={activateBotWebhook}
+                          className="flex-1 py-2 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded-lg text-[10px] font-bold cursor-pointer"
+                        >
+                          ربط الويب هوك وتنشيط البوت
+                        </button>
+                        {webhookStatus?.configured && (
+                          <button
+                            type="button"
+                            onClick={removeBotWebhook}
+                            className="py-2 px-3 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-lg text-[10px] font-bold cursor-pointer"
+                          >
+                            حذف الويب هوك
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Helpers quick guide info */}
+                  <div className="bg-slate-900 border border-white/5 rounded-2xl p-6 space-y-4">
+                    <h3 className="text-sm font-black text-white">دليل المساعدة السريع 💡</h3>
+                    <div className="space-y-3 text-xs text-slate-400 text-right leading-relaxed">
+                      <p>
+                        <strong>توكن تليجرام:</strong> ابحث في تليجرام عن حساب <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">@BotFather</a> وأرسل له الأمر <code className="bg-slate-950 border border-white/5 px-1 rounded font-mono text-cyan-400">/newbot</code> لإنشاء بوتك الجديد والحصول على مفتاح التوكن الآمن.
+                      </p>
+                      <hr className="border-white/5" />
+                      <p>
+                        <strong>معرف الشات (Chat ID):</strong> ابحث في تليجرام عن حساب <a href="https://t.me/userinfobot" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">@userinfobot</a> أو <a href="https://t.me/GetMyID_Bot" target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline">@GetMyID_Bot</a> وأرسل له أي رسالة وسيعطيك رقم المعرف الخاص بك لتقوم بوضعه هنا.
+                      </p>
+                    </div>
+                  </div>
+
+                </div>
+
               </motion.div>
             )}
 
           </AnimatePresence>
-
         </div>
 
       </main>
+
+      {/* 3. PLAN/MENU ADD & EDIT MODAL SCREEN */}
+      <AnimatePresence>
+        {showMenuModal && editingMenu && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md font-sans" dir="rtl">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-2xl bg-slate-900 border border-white/5 rounded-3xl p-6 space-y-6 relative overflow-hidden shadow-2xl text-right"
+            >
+              <div className="flex items-center justify-between border-b border-white/5 pb-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMenuModal(false);
+                    setEditingMenu(null);
+                  }}
+                  className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+                <h3 className="text-base font-black text-white">
+                  {isEditingExistingMenu ? "تعديل باقة الاشتراك الحالية 💳" : "إضافة باقة اشتراك جديدة 💳"}
+                </h3>
+              </div>
+
+              <form onSubmit={handleSaveMenu} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-400 block mr-1">رمز كود الباقة الفريد (ID):</label>
+                    <input
+                      type="text"
+                      placeholder="مثال: plan_ultra (أحرف إنجليزية وأرقام فقط)"
+                      value={editingMenu.id || ""}
+                      onChange={(e) => setEditingMenu({ ...editingMenu, id: e.target.value })}
+                      disabled={isEditingExistingMenu}
+                      className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-slate-100 font-mono text-left focus:outline-none disabled:opacity-50"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-400 block mr-1">عنوان اسم الباقة (العربي):</label>
+                    <input
+                      type="text"
+                      placeholder="مثال: اشتراك بريميوم 6 أشهر"
+                      value={editingMenu.title || ""}
+                      onChange={(e) => setEditingMenu({ ...editingMenu, title: e.target.value })}
+                      className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-400 block mr-1">سعر الباقة وعرض التفعيل:</label>
+                    <input
+                      type="text"
+                      placeholder="مثال: 150 ريال / $40"
+                      value={editingMenu.price || ""}
+                      onChange={(e) => setEditingMenu({ ...editingMenu, price: e.target.value })}
+                      className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none font-mono"
+                      required
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-bold text-slate-400 block mr-1">الوصف المختصر بالباقة:</label>
+                    <input
+                      type="text"
+                      placeholder="وصف مختصر يظهر كعنوان ترويجي للباقة"
+                      value={editingMenu.description || ""}
+                      onChange={(e) => setEditingMenu({ ...editingMenu, description: e.target.value })}
+                      className="w-full bg-slate-950 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-slate-100 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-slate-400 block mr-1">معلومات تفاصيل الدفع والتحويل للباقة (تظهر للعميل بعد الاختيار):</label>
+                  <div className="space-y-0">
+                    {renderFormatToolbar("menu-details-textarea", editingMenu.details || "", () => {}, insertFormatForMenuDetails)}
+                    <textarea
+                      id="menu-details-textarea"
+                      placeholder="اكتب تفاصيل الدفع الكاملة للباقة (رقم الحساب، اسم البنك، الايميل، تعليمات الارسال...) مع تفعيل التنسيق تليجرام..."
+                      value={editingMenu.details || ""}
+                      onChange={(e) => setEditingMenu({ ...editingMenu, details: e.target.value })}
+                      rows={5}
+                      className="w-full bg-slate-950 border border-white/5 border-t-0 rounded-b-xl p-4 text-xs text-slate-200 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-4 border-t border-white/5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMenuModal(false);
+                      setEditingMenu(null);
+                    }}
+                    className="py-2.5 px-5 bg-slate-950 hover:bg-slate-800 text-slate-400 rounded-xl text-xs font-bold cursor-pointer transition-all"
+                  >
+                    إلغاء الأمر
+                  </button>
+                  <button
+                    type="submit"
+                    className="py-2.5 px-6 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-black rounded-xl text-xs transition-all cursor-pointer shadow-lg shadow-cyan-500/10"
+                  >
+                    حفظ الباقة والتحديث 💾
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
     </div>
   );

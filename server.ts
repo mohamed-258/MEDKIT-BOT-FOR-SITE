@@ -28,7 +28,40 @@ try {
   const firebaseConfigPath = path.join(process.cwd(), "firebase-applet-config.json");
   if (fs.existsSync(firebaseConfigPath)) {
     const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, "utf-8"));
-    const adminApp = admin.apps.length ? admin.app() : admin.initializeApp({ projectId: firebaseConfig.projectId });
+    
+    let credentialOption: any = {};
+    let serviceAccountJson: any = null;
+
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+      try {
+        serviceAccountJson = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        console.log("Firebase Init: Using service account from FIREBASE_SERVICE_ACCOUNT env variable.");
+      } catch (e: any) {
+        console.error("Firebase Init: Failed to parse FIREBASE_SERVICE_ACCOUNT env variable as JSON. Error:", e.message);
+      }
+    } else if (fs.existsSync(path.join(process.cwd(), "firebase-service-account.json"))) {
+      try {
+        serviceAccountJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), "firebase-service-account.json"), "utf-8"));
+        console.log("Firebase Init: Using service account from firebase-service-account.json file.");
+      } catch (e: any) {
+        console.error("Firebase Init: Failed to parse firebase-service-account.json. Error:", e.message);
+      }
+    }
+
+    if (serviceAccountJson) {
+      credentialOption = { credential: admin.credential.cert(serviceAccountJson) };
+    } else {
+      credentialOption = { projectId: firebaseConfig.projectId };
+      console.log("Firebase Init: Using default credentials (suitable for Google Cloud environment).");
+    }
+
+    const adminApp = admin.apps.length 
+      ? admin.app() 
+      : admin.initializeApp({
+          ...credentialOption,
+          projectId: firebaseConfig.projectId
+        });
+
     firestore = getFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
     firestore.settings({ ignoreUndefinedProperties: true });
     console.log("Firebase Admin SDK successfully configured with Firestore ID:", firebaseConfig.firestoreDatabaseId);
@@ -73,7 +106,11 @@ async function callTelegramAPI(token: string, method: string, payload: any) {
     if (err.name === 'AbortError') {
       errMsg = `انتهاء مهلة الاتصال بخوادم تليجرام (${Math.round(timeoutMs / 1000)} ثوانٍ)`;
     }
-    console.error(`Telegram API Call to ${method} failed:`, errMsg);
+    if (method === 'getUpdates' && (errMsg.includes('Conflict') || errMsg.toLowerCase().includes('terminated by other'))) {
+      console.warn(`Telegram API Call to ${method} gracefully handled conflict:`, errMsg);
+    } else {
+      console.error(`Telegram API Call to ${method} failed:`, errMsg);
+    }
     throw new Error(errMsg);
   }
 }
@@ -804,6 +841,127 @@ app.get('/api/settings', async (req, res) => {
   }
 });
 
+// Database Export/Sync endpoints
+app.get('/api/sync-db', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const providedToken = authHeader?.split(' ')[1];
+    
+    const settings = await db.getSettings();
+    const validToken = settings.botToken || settings.dashboardPassword || "admin";
+    
+    if (!providedToken || (providedToken !== settings.botToken && providedToken !== settings.dashboardPassword)) {
+      return res.status(401).json({ error: "غير مصرح لك بالوصول لقاعدة البيانات السحابية." });
+    }
+    
+    const data = await db.exportAllData();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/sync-db', express.json({ limit: '20mb' }), async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const providedToken = authHeader?.split(' ')[1];
+    
+    const settings = await db.getSettings();
+    
+    if (!providedToken || (providedToken !== settings.botToken && providedToken !== settings.dashboardPassword)) {
+      return res.status(401).json({ error: "غير مصرح لك بمزامنة قاعدة البيانات السحابية." });
+    }
+    
+    await db.importAllData(req.body);
+    res.json({ success: true, message: "تمت مزامنة واستيراد البيانات بنجاح!" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Proxy endpoints to handle server-to-server sync (bypasses CORS entirely)
+app.post('/api/proxy-sync-pull', express.json(), async (req, res) => {
+  try {
+    const { railwayUrl, syncToken } = req.body;
+    if (!railwayUrl || !syncToken) {
+      return res.status(400).json({ error: "البيانات المطلوبة ناقصة (الرابط أو التوكن)." });
+    }
+
+    let cleanUrl = railwayUrl.trim();
+    if (cleanUrl.endsWith("/")) {
+      cleanUrl = cleanUrl.slice(0, -1);
+    }
+    if (!cleanUrl.startsWith("http")) {
+      cleanUrl = "https://" + cleanUrl;
+    }
+
+    // Server-to-server fetch using Node native fetch
+    const remoteRes = await fetch(`${cleanUrl}/api/sync-db`, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${syncToken}`
+      }
+    });
+
+    if (!remoteRes.ok) {
+      const errData = await remoteRes.json().catch(() => ({}));
+      return res.status(remoteRes.status).json({ 
+        error: errData.error || `فشل السيرفر السحابي في توفير البيانات (كود الاستجابة: ${remoteRes.status}).` 
+      });
+    }
+
+    const dbData = await remoteRes.json();
+
+    // Import into local database
+    await db.importAllData(dbData);
+
+    res.json({ success: true, message: "تمت مزامنة واستيراد البيانات السحابية بنجاح!", data: dbData });
+  } catch (err: any) {
+    res.status(500).json({ error: `خطأ اتصال بالسيرفر السحابي: ${err.message}` });
+  }
+});
+
+app.post('/api/proxy-sync-push', express.json(), async (req, res) => {
+  try {
+    const { railwayUrl, syncToken } = req.body;
+    if (!railwayUrl || !syncToken) {
+      return res.status(400).json({ error: "البيانات المطلوبة ناقصة (الرابط أو التوكن)." });
+    }
+
+    let cleanUrl = railwayUrl.trim();
+    if (cleanUrl.endsWith("/")) {
+      cleanUrl = cleanUrl.slice(0, -1);
+    }
+    if (!cleanUrl.startsWith("http")) {
+      cleanUrl = "https://" + cleanUrl;
+    }
+
+    // Export local data
+    const localData = await db.exportAllData();
+
+    // Server-to-server push using Node native fetch
+    const remoteRes = await fetch(`${cleanUrl}/api/sync-db`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${syncToken}`
+      },
+      body: JSON.stringify(localData)
+    });
+
+    if (!remoteRes.ok) {
+      const errData = await remoteRes.json().catch(() => ({}));
+      return res.status(remoteRes.status).json({ 
+        error: errData.error || `فشل سيرفر Railway في استقبال وحفظ البيانات (كود الاستجابة: ${remoteRes.status}).` 
+      });
+    }
+
+    res.json({ success: true, message: "تم تحديث ورفع قاعدة بيانات سيرفر Railway بنجاح!" });
+  } catch (err: any) {
+    res.status(500).json({ error: `خطأ اتصال بالسيرفر السحابي: ${err.message}` });
+  }
+});
+
 // Update Settings
 app.post('/api/settings', async (req, res) => {
   try {
@@ -1215,7 +1373,6 @@ async function runLongPolling() {
       }
     } catch (err: any) {
       const errMsg = err.message || "";
-      console.error('Long Polling encountered an error:', errMsg);
       
       // Self-healing backoff logic for multi-instance getUpdates conflicts
       if (errMsg.includes('terminated by other getUpdates') || errMsg.toLowerCase().includes('terminated by other')) {
@@ -1231,6 +1388,7 @@ async function runLongPolling() {
       } 
       // Generic error backoff
       else {
+        console.error('Long Polling encountered an error:', errMsg);
         await new Promise(resolve => setTimeout(resolve, 6000));
       }
     }

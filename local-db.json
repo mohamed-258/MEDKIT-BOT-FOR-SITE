@@ -13,104 +13,10 @@
       "devPollingEnabled": true
     }
   },
-  "menus": {
-    "m": {
-      "id": "m",
-      "title": "MID RRS ",
-      "price": "30",
-      "description": "Rrs",
-      "details": "للاشتراك في MID RRS🤩\nهتحوّل ٣٠ ج وتبعت اسكرين بالتحويل والرقم الي بعت منه\nفودافون كاش:\n01069746818\nتنبيه\n●خلي بالك التحويل فودافون كاش مش رصيد\n●وابعت ايميلك الي مسجل بيه علي المنصه \nملحوظه\nافتح المنصه من جهاز واحد ومتصفح واحد علطول واي مشكله تواجهك اتواصل معانا"
-    }
-  },
-  "tickets": {
-    "tkt_1780930660979_jd3gh": {
-      "id": "tkt_1780930660979_jd3gh",
-      "telegramUserId": "895138224",
-      "telegramUsername": "mohammed_hassan184",
-      "telegramName": "Mohamed Hassan",
-      "userId": "895138224",
-      "username": "mohammed_hassan184",
-      "fullName": "Mohamed Hassan",
-      "email": "mhsn68503@gmail.com",
-      "menuId": "m",
-      "menuTitle": "MID RRS ",
-      "receiptPhotoUrl": "https://api.telegram.org/file/bot8974609042:AAHWOSlmsLQeerqi-neMeFm9iyu0m9uwOdg/photos/file_39.jpg",
-      "transactionImage": "https://api.telegram.org/file/bot8974609042:AAHWOSlmsLQeerqi-neMeFm9iyu0m9uwOdg/photos/file_39.jpg",
-      "status": "new",
-      "adminComment": "",
-      "createdAt": "2026-06-08T14:57:40.979Z",
-      "updatedAt": "2026-06-08T14:57:40.979Z"
-    }
-  },
-  "sessions": {
-    "895138224": {
-      "userId": "895138224",
-      "step": "idle",
-      "selectedPlanId": "",
-      "email": "mhsn68503@gmail.com"
-    },
-    "8482105872": {
-      "userId": "8482105872",
-      "step": "idle"
-    }
-  },
-  "supportMessages": {
-    "supp_1780930598652_fcu12": {
-      "id": "supp_1780930598652_fcu12",
-      "telegramUserId": "895138224",
-      "telegramUsername": "mohammed_hassan184",
-      "telegramName": "Mohamed Hassan",
-      "messageText": "MID RRS",
-      "createdAt": "2026-06-08T14:56:38.652Z",
-      "replied": false
-    },
-    "supp_1780930648120_cfu0o": {
-      "id": "supp_1780930648120_cfu0o",
-      "telegramUserId": "895138224",
-      "telegramUsername": "mohammed_hassan184",
-      "telegramName": "Mohamed Hassan",
-      "messageText": "mhsn68503@gmail.com",
-      "createdAt": "2026-06-08T14:57:28.120Z",
-      "replied": false
-    },
-    "supp_1780930660979_au1f8": {
-      "id": "supp_1780930660979_au1f8",
-      "telegramUserId": "895138224",
-      "telegramUsername": "mohammed_hassan184",
-      "telegramName": "Mohamed Hassan",
-      "messageText": "[أرسل إثبات تحويل كصورة]",
-      "messagePhotoUrl": "https://api.telegram.org/file/bot8974609042:AAHWOSlmsLQeerqi-neMeFm9iyu0m9uwOdg/photos/file_39.jpg",
-      "createdAt": "2026-06-08T14:57:40.979Z",
-      "replied": false
-    },
-    "supp_1780930793080_c012t": {
-      "id": "supp_1780930793080_c012t",
-      "telegramUserId": "895138224",
-      "telegramUsername": "mohammed_hassan184",
-      "telegramName": "Mohamed Hassan",
-      "messageText": "MID RRS",
-      "createdAt": "2026-06-08T14:59:53.080Z",
-      "replied": false
-    },
-    "supp_1780930916563_dxd9t": {
-      "id": "supp_1780930916563_dxd9t",
-      "telegramUserId": "895138224",
-      "telegramUsername": "mohammed_hassan184",
-      "telegramName": "Mohamed Hassan",
-      "messageText": "MID RRS",
-      "createdAt": "2026-06-08T15:01:56.563Z",
-      "replied": false
-    },
-    "supp_1780931147650_q0pfx": {
-      "id": "supp_1780931147650_q0pfx",
-      "telegramUserId": "895138224",
-      "telegramUsername": "mohammed_hassan184",
-      "telegramName": "Mohamed Hassan",
-      "messageText": "MID RRS",
-      "createdAt": "2026-06-08T15:05:47.650Z",
-      "replied": false
-    }
-  },
+  "menus": {},
+  "tickets": {},
+  "sessions": {},
+  "supportMessages": {},
   "processedUpdates": {
     "647720569": true,
     "647720570": true,
@@ -164,6 +70,40 @@
     "647720813": true,
     "647720814": true,
     "647720815": true,
-    "647720816": true
+    "647720816": true,
+    "647721220": true,
+    "647721221": true,
+    "647721222": true,
+    "647721228": true,
+    "647721229": true,
+    "647721230": true,
+    "647721243": true,
+    "647721244": true,
+    "647721245": true,
+    "647721246": true,
+    "647721247": true,
+    "647721255": true,
+    "647721256": true,
+    "647721257": true,
+    "647721258": true,
+    "647721259": true,
+    "647721260": true,
+    "647721261": true,
+    "647721262": true,
+    "647721263": true,
+    "647721264": true,
+    "647721273": true,
+    "647721274": true,
+    "647721276": true,
+    "647721277": true,
+    "647721278": true,
+    "647721279": true,
+    "647721280": true,
+    "647721281": true,
+    "647721282": true,
+    "647721292": true,
+    "647721293": true,
+    "647721294": true,
+    "647721295": true
   }
 }
