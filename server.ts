@@ -555,25 +555,29 @@ async function handleTelegramUpdate(update: any) {
 
       // === أولوية قصوى: التحقق مما إذا كانت الرسالة عبارة عن باقة أو طلب دعم ===
       const menusList = await db.getMenus();
-      const matchedMenu = text.trim() ? menusList.find((m) => {
-        const cleanText = text.trim().toLowerCase().replace(/[^\w\d\u0600-\u06FF]/g, '');
-        const cleanTitle = m.title.trim().toLowerCase().replace(/[^\w\d\u0600-\u06FF]/g, '');
-        
+      let matchedMenu = text.trim() ? menusList.find((m) => {
         // Exact matches (e.g. clicking the keyboard menu buttons) are always processed as a preference
-        const isExact = text.trim() === m.title.trim() || text.trim() === "🫁 " + m.title.trim();
-        if (isExact) return true;
-
-        // If user is actively typing details (email, support, or receipt proof), bypass fuzzy/loose matching
-        if (session.step === "awaiting_info" || session.step === "awaiting_receipt" || session.step === "support") {
-          return false;
-        }
-
-        return (
-          text.trim().includes(m.title.trim()) ||
-          (m.title.trim().length > 2 && text.trim().length > 2 && m.title.trim().includes(text.trim())) ||
-          (cleanText.length > 2 && cleanTitle.length > 2 && (cleanText.includes(cleanTitle) || cleanTitle.includes(cleanText)))
-        );
+        return text.trim() === m.title.trim() || text.trim() === "🫁 " + m.title.trim();
       }) : undefined;
+
+      // If no exact match is found, fallback to fuzzy/substring matching
+      if (!matchedMenu && text.trim()) {
+        matchedMenu = menusList.find((m) => {
+          const cleanText = text.trim().toLowerCase().replace(/[^\w\d\u0600-\u06FF]/g, '');
+          const cleanTitle = m.title.trim().toLowerCase().replace(/[^\w\d\u0600-\u06FF]/g, '');
+
+          // If user is actively typing details (email, support, or receipt proof), bypass fuzzy/loose matching
+          if (session.step === "awaiting_info" || session.step === "awaiting_receipt" || session.step === "support") {
+            return false;
+          }
+
+          return (
+            text.trim().includes(m.title.trim()) ||
+            (m.title.trim().length > 2 && text.trim().length > 2 && m.title.trim().includes(text.trim())) ||
+            (cleanText.length > 2 && cleanTitle.length > 2 && (cleanText.includes(cleanTitle) || cleanTitle.includes(cleanText)))
+          );
+        });
+      }
 
       if (matchedMenu) {
         session.step = "awaiting_info";

@@ -2022,6 +2022,39 @@ export default function App() {
                         )}
                       </div>
                     </div>
+
+                    {/* Local Polling (Local Response) Control */}
+                    <div className="p-4 bg-slate-950 border border-white/5 rounded-xl space-y-3 text-xs text-right">
+                      <div className="flex items-center gap-2 justify-end">
+                        <span className="font-bold text-slate-200">الاستجابة والتشغيل المحلي (Polling) 🔄</span>
+                        <span className={`w-2 h-2 rounded-full ${webhookStatus?.devPollingEnabled ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`}></span>
+                      </div>
+
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        عند تفعيل الاستجابة المحلية، يقوم هذا السيرفر باستقبال رسائل تليجرام ومعالجتها فوراً. يمكنك إيقاف تشغيل الاستجابة المحلية بالكامل لمنع السيرفر من الرد والتداخل مع الخوادم الأخرى.
+                      </p>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-white/5 gap-3">
+                        <button
+                          type="button"
+                          onClick={() => handleTogglePolling(!webhookStatus?.devPollingEnabled)}
+                          className={`px-4 py-2 rounded-lg text-[11px] font-bold transition-all cursor-pointer ${
+                            webhookStatus?.devPollingEnabled
+                              ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                              : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                          }`}
+                        >
+                          {webhookStatus?.devPollingEnabled ? "⚠️ إيقاف الاستجابة المحلية" : "⚡ تشغيل الاستجابة المحلية"}
+                        </button>
+
+                        <div className="text-right">
+                          <span className="text-slate-400">الحالة: </span>
+                          <span className={`font-bold ${webhookStatus?.devPollingEnabled ? "text-emerald-400" : "text-rose-400"}`}>
+                            {webhookStatus?.devPollingEnabled ? "مفعلة وتعمل" : "متوقفة / معطلة"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
 
                   {/* Helpers quick guide info */}
