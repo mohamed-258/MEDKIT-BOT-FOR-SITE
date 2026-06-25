@@ -708,5 +708,17 @@ export class DatabaseController {
     cachedLocalDB = db; // ensure cache is up-to-date
   }
 
+  async resetLocalData(): Promise<void> {
+    const db = readLocalDB();
+    db.tickets = {};
+    db.sessions = {};
+    db.supportMessages = {};
+    if ('processedUpdates' in db || db.hasOwnProperty('processedUpdates')) {
+      (db as any).processedUpdates = {};
+    }
+    writeLocalDB(db);
+    cachedLocalDB = db;
+  }
+
 }
 

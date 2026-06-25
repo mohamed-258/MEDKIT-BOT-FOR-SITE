@@ -38,6 +38,7 @@ export interface Ticket {
   email: string;
   menuId: string;
   menuTitle: string;
+  price?: string;
   receiptPhotoUrl: string; // Base64 data URL
   status: 'new' | 'approved' | 'rejected';
   adminComment: string;

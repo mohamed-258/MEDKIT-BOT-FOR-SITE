@@ -883,6 +883,16 @@ app.post('/api/sync-db', express.json({ limit: '20mb' }), async (req, res) => {
   }
 });
 
+// Reset Local Database Data (Tickets, Messages, Sessions)
+app.post('/api/local-db/reset', async (req, res) => {
+  try {
+    await db.resetLocalData();
+    res.json({ success: true, message: "تم إفراغ وحذف كافة طلبات ومراسلات وجلسات السيرفر المحلي بنجاح!" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Proxy endpoints to handle server-to-server sync (bypasses CORS entirely)
 app.post('/api/proxy-sync-pull', express.json(), async (req, res) => {
   try {
